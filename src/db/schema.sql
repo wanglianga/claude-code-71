@@ -326,3 +326,108 @@ CREATE TABLE IF NOT EXISTS blacklist_log (
   created_by  BIGINT NOT NULL REFERENCES users(id),
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- ============================================================================
+-- 复鉴推翻初鉴闭环：商品锁定 / 暂停结算 / 复鉴案件 / 通知 / 品牌抽查 / 品牌知识库
+-- ============================================================================
+
+-- 幂等加列（已存在则跳过）
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='consignments' AND column_name='locked') THEN
+    ALTER TABLE consignments ADD COLUMN locked BOOLEAN NOT NULL DEFAULT FALSE;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='consignments' AND column_name='lock_reason') THEN
+    ALTER TABLE consignments ADD COLUMN lock_reason TEXT;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='orders' AND column_name='settlement_paused') THEN
+    ALTER TABLE orders ADD COLUMN settlement_paused BOOLEAN NOT NULL DEFAULT FALSE;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='orders' AND column_name='settlement_pause_reason') THEN
+    ALTER TABLE orders ADD COLUMN settlement_pause_reason TEXT;
+  END IF;
+END $$;
+
+-- ---------- 站内通知（买家/卖家/鉴定师/仓库/财务） ----------
+CREATE TABLE IF NOT EXISTS notifications (
+  id          BIGSERIAL PRIMARY KEY,
+  user_id     BIGINT NOT NULL REFERENCES users(id),
+  title       TEXT NOT NULL,
+  content     TEXT NOT NULL,
+  category    TEXT NOT NULL DEFAULT 'system',   -- reauth / dispute / order / finance / system
+  link_type   TEXT,                              -- consignment / order / dispute / reauth_review
+  link_id     BIGINT,
+  is_read     BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_notif_user ON notifications(user_id, is_read);
+
+-- ---------- 复鉴推翻案件 ----------
+CREATE TABLE IF NOT EXISTS reauth_reviews (
+  id                     BIGSERIAL PRIMARY KEY,
+  code                   TEXT UNIQUE NOT NULL,
+  consignment_id         BIGINT NOT NULL REFERENCES consignments(id),
+  order_id               BIGINT REFERENCES orders(id),
+  dispute_id             BIGINT REFERENCES disputes(id),
+  initial_auth_id        BIGINT NOT NULL REFERENCES authentications(id),
+  reauth_id              BIGINT NOT NULL REFERENCES authentications(id),
+  brand                  TEXT NOT NULL,
+  authenticity_changed   BOOLEAN NOT NULL DEFAULT FALSE,  -- 真伪结论是否变化
+  grade_changed          BOOLEAN NOT NULL DEFAULT FALSE,  -- 成色等级是否变化
+  initial_authenticator BIGINT NOT NULL REFERENCES users(id),
+  reauthenticator       BIGINT NOT NULL REFERENCES users(id),
+  initial_summary       TEXT,                              -- 初鉴结论快照
+  reauth_summary        TEXT,                              -- 复鉴结论快照
+  difference_detail     TEXT NOT NULL,                     -- 两次鉴定差异（自动生成）
+  authenticator_opinion TEXT,                              -- 初鉴鉴定师说明/复盘意见
+  opinion_at            TIMESTAMPTZ,
+  -- 已售出时买家的选择
+  buyer_choice          TEXT CHECK (buyer_choice IN ('refund','keep_with_compensation','pending')),
+  buyer_choice_note     TEXT,
+  buyer_decided_at      TIMESTAMPTZ,
+  -- 责任复盘
+  responsibility        TEXT CHECK (responsibility IN ('initial_error','process_gap','evidence_insufficient','no_fault')),
+  responsibility_detail TEXT,
+  reviewer_id           BIGINT REFERENCES users(id),
+  reviewed_at           TIMESTAMPTZ,
+  status                TEXT NOT NULL DEFAULT 'opened'
+                          CHECK (status IN ('opened','awaiting_buyer','responsibility_reviewed','closed')),
+  created_at            TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_reauth_consignment ON reauth_reviews(consignment_id);
+CREATE INDEX IF NOT EXISTS idx_reauth_initial_auth ON reauth_reviews(initial_authenticator);
+
+-- ---------- 同品牌近期鉴定抽查 ----------
+CREATE TABLE IF NOT EXISTS brand_audits (
+  id                BIGSERIAL PRIMARY KEY,
+  code              TEXT UNIQUE NOT NULL,
+  brand             TEXT NOT NULL,
+  category          TEXT,
+  triggered_by_reauth_id BIGINT REFERENCES reauth_reviews(id),
+  consignment_id    BIGINT REFERENCES consignments(id),
+  authenticator_id  BIGINT REFERENCES users(id),
+  initial_auth_id   BIGINT REFERENCES authentications(id),
+  reviewer_id       BIGINT REFERENCES users(id),
+  result            TEXT CHECK (result IN ('consistent','mismatch','uncertain')),
+  finding           TEXT,
+  promoted_kb       BOOLEAN NOT NULL DEFAULT FALSE,  -- 是否已沉淀进品牌知识库
+  status            TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','audited')),
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+  audited_at        TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_brand_audit_brand ON brand_audits(brand, status);
+
+-- ---------- 品牌鉴定知识库 ----------
+CREATE TABLE IF NOT EXISTS brand_knowledge (
+  id            BIGSERIAL PRIMARY KEY,
+  brand         TEXT NOT NULL,
+  category      TEXT,
+  title         TEXT NOT NULL,
+  content       TEXT NOT NULL,
+  key_points    JSONB NOT NULL DEFAULT '[]',   -- 鉴定要点
+  source_audit_id BIGINT REFERENCES brand_audits(id),
+  updated_by    BIGINT REFERENCES users(id),
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (brand, title)
+);
+CREATE INDEX IF NOT EXISTS idx_kb_brand ON brand_knowledge(brand);

@@ -65,6 +65,7 @@ export default async function consignmentRoutes(fastify) {
     const { rows } = await query(
       `SELECT c.id,c.code,c.category,c.brand,c.model,c.serial_no,c.expected_price,c.reserve_price,
               c.declared_value,c.high_value,c.authenticity,c.grade,c.sale_price,c.channel,c.status,
+              c.locked,c.lock_reason,
               c.limited_edition,c.dual_auth,c.vault_no,u.display_name AS seller_name,c.created_at
        FROM consignments c JOIN users u ON u.id=c.seller_id
        WHERE ${where} ORDER BY c.id DESC LIMIT 200`, params);
@@ -240,6 +241,7 @@ export default async function consignmentRoutes(fastify) {
     if (!['shop', 'live', 'auction'].includes(channel)) throw new HttpError(400, '渠道不合法');
     return tx(async (c) => {
       const con = await getConsignment(c, id);
+      if (con.locked) throw new HttpError(409, `商品已被平台锁定（${con.lock_reason || '复鉴/争议处理中'}），不能上架`);
       if (con.status !== 'quoted') throw new HttpError(409, `状态 ${con.status}，需卖家确认报价后上架`);
       const salePrice = b.salePrice ? money(b.salePrice) : money(con.sale_price);
       if (!salePrice) throw new HttpError(400, '缺少上架价');
@@ -293,6 +295,7 @@ export default async function consignmentRoutes(fastify) {
     const b = req.body || {};
     return tx(async (c) => {
       const con = await getConsignment(c, id);
+      if (con.locked) throw new HttpError(409, `商品已被平台锁定（${con.lock_reason || '复鉴/争议处理中'}），撤回请在复鉴/争议案件中处理`);
       if (Number(con.seller_id) !== req.user.uid && !['admin', 'ops'].includes(req.user.role)) {
         throw new HttpError(403, '仅卖家本人可申请撤回');
       }

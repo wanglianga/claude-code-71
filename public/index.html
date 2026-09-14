@@ -99,6 +99,20 @@
   .rolechip{font-size:11px;color:#0e0f13;background:var(--gold);border-radius:4px;padding:1px 7px;font-weight:600}
   pre{white-space:pre-wrap;word-break:break-all;margin:0;font-family:inherit;font-size:12.5px;line-height:1.6}
   .empty{color:var(--mut);text-align:center;padding:30px 0}
+  /* 通知铃铛 */
+  .bell-badge{background:var(--bad);color:#fff;border-radius:20px;font-size:10px;padding:0 5px;margin-left:3px;font-weight:700}
+  .bell-panel{position:absolute;right:0;top:38px;width:380px;max-height:440px;overflow:auto;background:var(--panel2);
+    border:1px solid var(--gold);border-radius:10px;z-index:40;box-shadow:0 12px 40px rgba(0,0,0,.5)}
+  .bell-item{padding:11px 13px;border-bottom:1px solid var(--line);cursor:pointer}
+  .bell-item:hover{background:#22253200}
+  .bell-item.unread{background:#242117}
+  .bell-item .bt{font-weight:600;font-size:12.5px}
+  .bell-item .bc{color:var(--mut);font-size:12px;margin-top:3px;white-space:pre-wrap}
+  .bell-item .bm{color:var(--mut);font-size:10.5px;margin-top:4px}
+  .lock-banner{background:#2a1a1a;border:1px solid var(--bad);color:#f0b4b4;border-radius:9px;padding:10px 13px;margin-bottom:12px;font-size:13px}
+  .pause-banner{background:#2a2416;border:1px solid var(--warn);color:#eccf9a;border-radius:9px;padding:10px 13px;margin-bottom:12px;font-size:13px}
+  .diff-box{background:#14161f;border:1px solid var(--line);border-radius:8px;padding:10px;white-space:pre-wrap;font-size:12.5px;line-height:1.7}
+  .badge-new{background:var(--bad);color:#fff;border-radius:3px;font-size:10px;padding:0 5px;margin-left:6px}
 </style>
 </head>
 <body>
@@ -123,6 +137,10 @@
     <div class="brand">LUXCONSIGN<small>寄卖鉴定与争议退款平台</small></div>
     <div class="spacer"></div>
     <div class="who">当前：<b id="whoName"></b> <span class="rolechip" id="whoRole"></span></div>
+    <div style="position:relative">
+      <button class="btn ghost sm" id="bellBtn" title="通知">🔔 <span id="bellCount" class="bell-badge hidden">0</span></button>
+      <div id="bellPanel" class="bell-panel hidden"></div>
+    </div>
     <button class="btn ghost sm" id="logoutBtn">退出</button>
   </header>
   <div class="tabs" id="tabs"></div>
@@ -151,10 +169,12 @@
 /* ================= 基础 ================= */
 const $ = (s, r=document) => r.querySelector(s);
 const api = async (path, opts={}) => {
+  const headers = { ...(localStorage.tok ? {Authorization:'Bearer '+localStorage.tok} : {}) };
+  if (opts.body !== undefined) headers['Content-Type'] = 'application/json';
   const res = await fetch(path, {
-    headers: { 'Content-Type': 'application/json', ...(localStorage.tok ? {Authorization:'Bearer '+localStorage.tok} : {}) },
     ...opts,
-    body: opts.body ? JSON.stringify(opts.body) : undefined,
+    headers,
+    body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
   });
   const data = await res.json().catch(()=>({}));
   if (!res.ok) throw new Error(data.error || ('HTTP '+res.status));
@@ -212,12 +232,47 @@ async function login(){
 $('#logoutBtn').onclick = ()=>{ localStorage.removeItem('tok'); location.reload(); };
 
 /* ================= 应用状态 ================= */
-let ME=null, TAB='con', selectedId=null, listCache=[], stdCache=[], usersCache=[], liveCache=[];
+let ME=null, TAB='con', selectedId=null, selectedReauth=null, listCache=[], stdCache=[], usersCache=[], liveCache=[], kbCache=[];
 function enterApp(){
   ME = JSON.parse(localStorage.me);
   $('#login').classList.add('hidden'); $('#app').classList.remove('hidden');
   $('#whoName').textContent = ME.displayName; $('#whoRole').textContent = ROLE[ME.role];
   buildTabs(); switchTab(ME.role==='buyer' ? 'orders' : 'con');
+  loadNotifications();
+  if (window.__bellTimer) clearInterval(window.__bellTimer);
+  window.__bellTimer = setInterval(loadNotifications, 15000);
+}
+
+/* 通知中心 */
+async function loadNotifications(){
+  try{
+    const d = await api('/api/notifications');
+    const badge=$('#bellCount');
+    if(d.unread>0){ badge.textContent=d.unread; badge.classList.remove('hidden'); }
+    else badge.classList.add('hidden');
+    $('#bellPanel').innerHTML = (d.items.length?d.items:[{title:'暂无通知',content:'',is_read:true}]).map(n=>`
+      <div class="bell-item ${n.is_read?'':'unread'}" data-id="${n.id}" data-lt="${n.link_type||''}" data-lid="${n.link_id||''}">
+        <div class="bt">${n.title}</div>
+        ${n.content?`<div class="bc">${n.content}</div>`:''}
+        <div class="bm">${DT(n.created_at)} ${n.is_read?'':'· 未读'}</div>
+      </div>`).join('');
+    $('#bellPanel').querySelectorAll('.bell-item[data-id]').forEach(el=>el.onclick=async()=>{
+      await api(`/api/notifications/${el.dataset.id}/read`,{method:'POST'});
+      const lt=el.dataset.lt, lid=Number(el.dataset.lid);
+      $('#bellPanel').classList.add('hidden');
+      if(lt==='consignment'){ switchTab('con'); setTimeout(()=>openConsignment(lid),400); }
+      else if(lt==='order'){ switchTab('orders'); }
+      else if(lt==='dispute'){ switchTab('disputes'); }
+      else if(lt==='reauth_review'){ selectedReauth=lid; switchTab('reauth'); }
+      loadNotifications();
+    });
+  }catch(e){ /* 未登录或无权限时静默 */ }
+}
+$('#bellBtn').onclick=(e)=>{ e.stopPropagation(); $('#bellPanel').classList.toggle('hidden'); };
+document.addEventListener('click',(e)=>{ if(!$('#bellPanel').classList.contains('hidden') && !e.target.closest('#bellPanel') && !e.target.closest('#bellBtn')) $('#bellPanel').classList.add('hidden'); });
+async function openConsignment(id){
+  const el=[...document.querySelectorAll('#listBody .list-item')].find(x=>Number(x.dataset.id)===id);
+  if(el){ el.click(); } else { await renderConsignmentDetail(id); }
 }
 const isStaff = () => !['seller','buyer'].includes(ME.role);
 
@@ -226,6 +281,7 @@ function buildTabs(){
   if (ME.role==='buyer') tabs.length=0, tabs.push({k:'shop',n:'在售商城'},{k:'orders',n:'我的订单'}), tabs.push({k:'con',n:'我的争议单'});
   if (ME.role==='seller') tabs.push({k:'orders',n:'相关订单'});
   if (['warehouse','ops','admin','cs','finance'].includes(ME.role)) tabs.push({k:'orders',n:'订单/物流'});
+  tabs.push({k:'reauth',n:'复鉴闭环'});
   tabs.push({k:'disputes',n:'争议中心'});
   if (isStaff()) tabs.push({k:'admin',n:'运营管理'});
   $('#tabs').innerHTML = tabs.map(t=>`<div class="tab" data-k="${t.k}">${t.n}</div>`).join('');
@@ -238,6 +294,7 @@ async function switchTab(k){
   if (k==='con'||k==='shop') { $('#listTitle').textContent = k==='shop'?'在售商城':'寄卖单'; await loadConsignments(); }
   if (k==='orders') { $('#listTitle').textContent='订单 / 物流'; await loadOrders(); }
   if (k==='disputes') { $('#listTitle').textContent='争议案件'; await loadDisputes(); }
+  if (k==='reauth') { $('#listTitle').textContent='复鉴推翻案件'; await loadReauths(); }
   if (k==='admin') { $('#listTitle').textContent='运营管理'; renderAdminList(); }
 }
 
@@ -248,7 +305,7 @@ async function loadConsignments(){
     const d = await api(path); listCache=d.items;
     $('#listBody').innerHTML = d.items.length ? d.items.map(c=>`
       <div class="list-item" data-id="${c.id}">
-        <div class="li-top"><span class="code">${c.code}</span>${stTag(c.status)}</div>
+        <div class="li-top"><span class="code">${c.code}</span><span>${c.locked?'<span class="tag bad">🔒已锁定</span>':''}${stTag(c.status)}</span></div>
         <div style="margin:5px 0"><b>${c.brand}</b> ${c.model}</div>
         <div class="muted" style="font-size:12px">
           ${CAT[c.category]} · ${c.seller_name}
@@ -273,7 +330,7 @@ async function loadOrders(){
   $('#listBody').innerHTML = d.items.length ? d.items.map(o=>`
     <div class="list-item" data-id="${o.id}">
       <div class="li-top"><span class="code">${o.code}</span>
-        <span class="tag ${o.status==='refunded'?'bad':o.status==='completed'?'ok':'info'}">${{placed:'待发货',shipping:'配送中',delivered:'已签收/售后中',completed:'已完成',refunded:'已退款',returned:'已退货'}[o.status]||o.status}</span></div>
+        <span>${o.settlement_paused?'<span class="tag bad">⏸结算暂停</span>':''}<span class="tag ${o.status==='refunded'?'bad':o.status==='completed'?'ok':'info'}">${{placed:'待发货',shipping:'配送中',delivered:'已签收/售后中',completed:'已完成',refunded:'已退款',returned:'已退货'}[o.status]||o.status}</span></span></div>
       <div style="margin:5px 0"><b>${o.brand}</b> ${o.model} <span class="muted">(${o.consignment_code})</span></div>
       <div class="muted" style="font-size:12px">${o.buyer_name||''} · ${o.outbound_carrier?('发货 '+o.outbound_carrier+'/'+o.outbound_tracking):'未发货'}</div>
       <div class="price" style="margin-top:3px">${fmt(o.amount)}</div>
@@ -365,8 +422,14 @@ async function renderConsignmentDetail(id){
     acts.push(['登记状态复核', ()=>confirmForm(d)]);
   if (['warehouse','admin'].includes(r) && d.high_value && ['received','authenticated','quoted','listed','disputed'].includes(d.status))
     acts.push(['保险箱交接', ()=>vaultForm(d)]);
-  if (['authenticator','admin'].includes(r) && ['received','authenticating','disputed'].includes(d.status))
-    acts.push([d.status==='disputed'?'复鉴（可推翻初鉴）':(d.high_value||['watch','jewelry'].includes(d.category)?'双人鉴定':'提交鉴定'), ()=>authForm(d)]);
+  if (['authenticator','admin'].includes(r) && ['received','authenticating'].includes(d.status) && !d.locked)
+    acts.push([(d.high_value||['watch','jewelry'].includes(d.category)?'双人鉴定':'提交鉴定'), ()=>authForm(d)]);
+  if (['authenticator','admin'].includes(r) && d.authentications.length>=1
+      && ['authenticated','quoted','listed','sold','shipping','delivered','aftersales','disputed'].includes(d.status)
+      && !d.locked)
+    acts.push(['🔁 平台复鉴（推翻即锁货/暂停结算）', ()=>reauthForm(d)]);
+  if (['authenticator','admin'].includes(r) && d.status==='disputed' && !d.locked)
+    acts.push(['争议中补充复鉴', ()=>authForm(d)]);
   if (['ops','admin'].includes(r) && ['authenticated','quoted'].includes(d.status))
     acts.push(['生成寄卖报价', ()=>quoteForm(d)]);
   if (['ops','admin'].includes(r) && d.status==='quoted')
@@ -385,7 +448,9 @@ async function renderConsignmentDetail(id){
     acts.push(['代开争议', ()=>openDisputeForm(d,null)]);
 
   $('#detailBody').innerHTML = `
-    <div class="section"><div class="t">基础信息 <span>${d.high_value?'<span class="tag gold">高价值·全节点强制复核</span>':''}${d.dual_auth?'<span class="tag info">已双人鉴定</span>':''}${d.limited_edition?'<span class="tag warn">限量款</span>':''}</span></div>
+    ${d.locked?`<div class="lock-banner">🔒 商品已锁定：${d.lock_reason||'复鉴/争议处理中'} —— 暂停销售、上架、撤回与结算，请在「复鉴闭环」中处理。</div>`:''}
+    ${d.order&&d.order.settlement_paused?`<div class="pause-banner">⏸ 订单 ${d.order.code||''} 结算已暂停：${d.order.settlement_pause_reason||''}</div>`:''}
+    <div class="section"><div class="t">基础信息 <span>${d.high_value?'<span class="tag gold">高价值·全节点强制复核</span>':''}${d.dual_auth?'<span class="tag info">已双人鉴定</span>':''}${d.limited_edition?'<span class="tag warn">限量款</span>':''}${d.locked?'<span class="tag bad">已锁定</span>':''}</span></div>
       <div class="c"><div class="kv">
         <span class="k">商品</span><b>${d.brand} ${d.model}</b>
         <span class="k">品类/序列号</span><span>${CAT[d.category]} / ${d.serial_no||'—'}</span>
@@ -552,6 +617,48 @@ async function authForm(d){
     await api(`/api/consignments/${selectedId}/authenticate`,{method:'POST',body:b});
     toast('鉴定已提交'+(isRe?'（争议中的复鉴）':''),'ok'); refresh();
   });
+}
+
+/* 平台复鉴：提交到编排接口，推翻时自动锁货/暂停结算/立案/通知/抽查 */
+async function reauthForm(d){
+  const last = d.authentications.at(-1);
+  let kbHtml='';
+  try{
+    const kb = await api('/api/brand-knowledge?brand='+encodeURIComponent(d.brand));
+    if (kb.items.length){
+      kbHtml = `<div class="section" style="margin-bottom:10px"><div class="t">品牌鉴定知识库（${d.brand}）</div><div class="c">
+        ${kb.items.slice(0,3).map(k=>`<div style="margin-bottom:8px"><b>${k.title}</b>
+          <ul style="margin:5px 0 0 16px;padding:0">${(k.key_points||[]).map(p=>`<li class="muted">${p}</li>`).join('')}</ul></div>`).join('')}
+      </div></div>`;
+    }
+  }catch(e){}
+  modal(`平台复鉴 · ${d.code}（${d.brand} ${d.model}）`, [
+    {type:'html', html:`<div class="pause-banner" style="margin:0 0 10px">初鉴（第${last?.round||1}轮）：${({authentic:'正品',fake:'假冒',suspicious:'存疑'})[last?.result]} / 成色${last?.grade||'—'}。
+      若复鉴改变真伪或成色，系统将<b>自动锁定商品、暂停结算、建立复鉴案件、通知买家/卖家/初鉴人，并启动同品牌抽查</b>。</div>${kbHtml}`},
+    {key:'result',label:'复鉴真伪结论',type:'select',
+      options:[['authentic','正品'],['fake','假冒'],['suspicious','存疑']], value:'fake'},
+    {key:'grade',label:'复鉴成色等级',type:'select',options:['N','S','A','B','C'],value:'C'},
+    {key:'serialCheck',label:'序列号',type:'textarea',required:false,ph:'与初鉴不同的发现'},
+    {key:'hardwareCheck',label:'五金',type:'textarea',required:false},
+    {key:'leatherCheck',label:'皮质',type:'textarea',required:false},
+    {key:'stitchingCheck',label:'走线',type:'textarea',required:false},
+    {key:'movementCheck',label:'机芯（腕表）',type:'textarea',required:false},
+    {key:'receiptCheck',label:'票据',type:'textarea',required:false},
+    {key:'caseHistory',label:'历史案例',type:'textarea',required:false,ph:'引用仿品案例'},
+    {key:'summary',label:'复鉴综合结论',type:'textarea',ph:'说明推翻/维持的依据'},
+    {key:'evidence',label:'证据（逗号分隔）',required:false,value:'photo://reauth-detail.jpg'},
+  ], async b=>{
+    b.evidence=b.evidence?String(b.evidence).split(',').map(s=>s.trim()).filter(Boolean):[];
+    const r = await api(`/api/consignments/${d.id}/reauth`,{method:'POST',body:b});
+    if (r.overturned){
+      toast('复鉴推翻初鉴：已锁货/暂停结算/立案/通知/启动同品牌抽查','err');
+      selectedReauth = r.review.id;
+      setTimeout(()=>switchTab('reauth'),300);
+    } else {
+      toast('复鉴完成，维持初鉴','ok');
+    }
+    refresh();
+  }, '提交复鉴');
 }
 async function quoteForm(d){
   modal('运营生成寄卖报价（鉴定结论 + 市场价 + 佣金 + 底价）', [
@@ -824,8 +931,8 @@ async function renderDisputeDetail(id){
     await api(`/api/disputes/${id}/investigate`,{method:'POST',body:{}});
     toast('已受理','ok'); renderDisputeDetail(id);
   }]);
-  if (['authenticator','admin'].includes(ME.role)&&d.status!=='resolved') acts.push(['发起复鉴（可推翻初鉴）',async()=>{
-    selectedId=d.consignment_id; const cd=await api('/api/consignments/'+d.consignment_id); authForm(cd);
+  if (['authenticator','admin'].includes(ME.role)&&d.status!=='resolved') acts.push(['发起平台复鉴（推翻即锁货闭环）',async()=>{
+    selectedId=d.consignment_id; const cd=await api('/api/consignments/'+d.consignment_id); reauthForm(cd);
   }]);
   if (['cs','finance','admin'].includes(ME.role)&&d.status!=='resolved') acts.push(['裁决（退款/赔付/让佣/保险/处置/黑名单）',()=>resolveForm(d)]);
   const box=$('#dAct');
@@ -875,6 +982,171 @@ function resolveForm(d){
   });
 }
 
+/* ================= 复鉴推翻闭环 ================= */
+async function loadReauths(){
+  const d = await api('/api/reauth-reviews');
+  $('#listBody').innerHTML = d.items.length ? d.items.map(x=>{
+    const changed = (x.authenticity_changed||x.grade_changed);
+    return `<div class="list-item" data-id="${x.id}">
+      <div class="li-top"><span class="code">${x.code}</span>
+        <span class="tag bad">推翻初鉴</span></div>
+      <div style="margin:5px 0"><b>${x.brand}</b> ${x.model} <span class="muted">(${x.consignment_code})</span></div>
+      <div class="muted" style="font-size:12px">初鉴 ${x.initial_auth_name} → 复鉴 ${x.reauth_name}${x.order_code?' · 订单 '+x.order_code:''}</div>
+      <div style="margin-top:4px">
+        ${x.settlement_paused?'<span class="tag bad">结算暂停</span>':''}
+        ${x.locked?'<span class="tag bad">🔒锁定</span>':''}
+        <span class="tag ${x.status==='closed'?'ok':'warn'}">${{opened:'处理中',awaiting_buyer:'待买家选择',responsibility_reviewed:'已复盘',closed:'已结案'}[x.status]}</span>
+      </div>
+    </div>`;
+  }).join('') : '<div class="empty">暂无复鉴推翻案件<br><span class="muted" style="font-size:12px">在寄卖单详情点「平台复鉴」，当真伪/成色改变时自动生成</span></div>';
+  $('#listBody').querySelectorAll('.list-item').forEach(el=>el.onclick=()=>{
+    selectedReauth=Number(el.dataset.id);
+    $('#listBody').querySelectorAll('.list-item').forEach(x=>x.classList.toggle('sel',x===el));
+    renderReauthDetail(selectedReauth);
+  });
+  if (selectedReauth){ const el=$('#listBody').querySelector(`[data-id="${selectedReauth}"]`); if(el) el.classList.add('sel'); renderReauthDetail(selectedReauth); }
+}
+async function renderReauthDetail(id){
+  let d; try{ d=await api('/api/reauth-reviews/'+id); }catch(e){ return toast(e.message,'err'); }
+  $('#detailTitle').innerHTML = `复鉴案件 ${d.code} <span class="tag bad">推翻初鉴</span>`;
+  const r=ME.role;
+  const isInitial = Number(d.initial_authenticator)===ME.id;
+  const isBuyer = Number(d.buyer_id)===ME.id;
+  const isStaff = ['cs','admin','ops','finance','authenticator','warehouse'].includes(r);
+  const RESP={initial_error:'初鉴失误（计入绩效）',process_gap:'流程缺陷',evidence_insufficient:'证据不足',no_fault:'无责'};
+  $('#detailBody').innerHTML = `
+    ${d.locked?`<div class="lock-banner">🔒 商品已锁定：${d.lock_reason||''}。复盘结案前不得销售/上架/撤回。</div>`:''}
+    ${d.settlement_paused?`<div class="pause-banner">⏸ 订单 ${d.order_code||''} 结算已暂停：${d.settlement_pause_reason||''}。售后期满也不会放款，待复盘结案解除。</div>`:''}
+    <div class="section"><div class="t">案件概览</div><div class="c"><div class="kv">
+      <span class="k">寄卖单</span><span><a id="rrCon">${d.consignment_code}</a> · ${d.brand} ${d.model}</span>
+      <span class="k">影响订单</span><span>${d.order_code?d.order_code+'（'+d.order_status+'，金额 '+fmt(d.order_amount)+'）':'未售出，仅锁定商品'}</span>
+      <span class="k">关联争议</span><span>${d.dispute_code||'—'}</span>
+      <span class="k">初鉴鉴定师</span><span>${d.initial_auth_name}</span>
+      <span class="k">复鉴鉴定师</span><span>${d.reauth_name}</span>
+      <span class="k">状态</span><span>${{opened:'处理中',awaiting_buyer:'待买家选择',responsibility_reviewed:'已复盘待结案',closed:'已结案'}[d.status]}</span>
+    </div></div></div>
+
+    <div class="section"><div class="t">两次鉴定差异（自动比对）</div><div class="c">
+      <div style="margin-bottom:8px">
+        <span class="tag ${d.authenticity_changed?'bad':''}">真伪${d.authenticity_changed?'改变':'未变'}</span>
+        <span class="tag ${d.grade_changed?'bad':''}">成色${d.grade_changed?'改变':'未变'}</span>
+      </div>
+      <div class="diff-box">${d.difference_detail}</div>
+      <div class="grid2" style="margin-top:10px">
+        <div><div class="muted" style="font-size:12px;margin-bottom:4px">初鉴结论</div><pre class="muted">${d.initial_summary||''}</pre></div>
+        <div><div class="muted" style="font-size:12px;margin-bottom:4px">复鉴结论</div><pre>${d.reauth_summary||''}</pre></div>
+      </div>
+    </div></div>
+
+    <div class="section"><div class="t">初鉴鉴定师说明 / 复盘意见</div><div class="c">
+      ${d.authenticator_opinion?`<pre>${d.authenticator_opinion}</pre><div class="muted" style="font-size:11px">${DT(d.opinion_at)}</div>`:'<span class="muted">尚未提交</span>'}
+      <div class="pill-actions" id="rrAct"></div>
+    </div></div>
+
+    ${d.order_id?`<div class="section"><div class="t">买家通知与退款选择</div><div class="c">
+      <div class="muted" style="font-size:12.5px;margin-bottom:8px">已通知买家（${d.buyer_name}）。买家可选择：① 全额退款退货；② 保留商品并申请赔付/让佣。结算在裁决前暂停。</div>
+      ${d.buyer_choice&&d.buyer_choice!=='pending'
+        ? `<span class="tag ok">已选择：${d.buyer_choice==='refund'?'全额退款退货':'保留商品并索赔'}</span> ${d.buyer_choice_note||''}<div class="muted" style="font-size:11px;margin-top:4px">${DT(d.buyer_decided_at)}</div>`
+        : '<span class="tag warn">待买家选择</span>'}
+    </div></div>`:''}
+
+    <div class="section"><div class="t">鉴定责任复盘</div><div class="c">
+      ${d.responsibility
+        ? `<div><span class="tag ${d.responsibility==='initial_error'?'bad':'info'}">${RESP[d.responsibility]}</span> <span class="muted">复盘人 ${d.reviewer_name||'—'} · ${DT(d.reviewed_at)}</span></div>
+           <pre style="margin-top:8px">${d.responsibility_detail||''}</pre>`
+        : '<span class="muted">尚未复盘</span>'}
+    </div></div>
+
+    <div class="section"><div class="t">同品牌近期鉴定抽查（${d.audits.length}）
+      <span style="margin-left:auto"><button class="btn sm ghost" id="rrKB">品牌知识库</button></span></div><div class="c" id="rrAudits"></div></div>
+  `;
+  $('#rrCon').onclick=()=>{ switchTab('con'); setTimeout(()=>openConsignment(d.consignment_id),400); };
+
+  // 动作按钮
+  const acts=[];
+  if (isInitial && d.status!=='closed') acts.push(['提交初鉴说明',opinionForm]);
+  if (isBuyer && d.order_id && (!d.buyer_choice||d.buyer_choice==='pending'))
+    acts.push(['选择退款/保留方案',buyerChoiceForm]);
+  if (isStaff && d.status!=='closed') acts.push(['提交责任复盘（结案解锁）',respForm]);
+  const box=$('#rrAct');
+  if(acts.length){ box.innerHTML=acts.map(([l])=>actBtn(l)).join(''); const m={}; acts.forEach(([l,f])=>m[l]=f); bindActions(box,m); }
+  renderAudits(d);
+  $('#rrKB').onclick=()=>kbModal(d.brand);
+
+  function opinionForm(){
+    modal('初鉴鉴定师说明',[
+      {key:'opinion',label:'对初鉴判断的说明与整改意见',type:'textarea',ph:'说明当时依据、为何误判、后续改进'},
+    ],async b=>{ await api(`/api/reauth-reviews/${id}/opinion`,{method:'POST',body:b}); toast('说明已提交','ok'); renderReauthDetail(id); });
+  }
+  function buyerChoiceForm(){
+    modal('买家选择复鉴应对方案',[
+      {key:'choice',label:'处理方式',type:'select',options:[['refund','① 全额退款退货'],['keep_with_compensation','② 保留商品并申请赔付/让佣']]},
+      {key:'note',label:'补充说明',type:'textarea',required:false},
+    ],async b=>{ await api(`/api/reauth-reviews/${id}/buyer-choice`,{method:'POST',body:b}); toast('已提交选择，等待平台裁决','ok'); renderReauthDetail(id); loadNotifications(); });
+  }
+  function respForm(){
+    modal('鉴定责任复盘（结案即解锁商品、解除结算暂停）',[
+      {key:'responsibility',label:'责任认定',type:'select',options:[['initial_error','初鉴失误（计入鉴定师绩效）'],['process_gap','流程缺陷'],['evidence_insufficient','证据不足'],['no_fault','无责']]},
+      {key:'responsibilityDetail',label:'复盘结论与整改',type:'textarea',ph:'误判环节、流程改进、培训/知识库更新动作'},
+      {key:'close',label:'是否同步结案并解锁',type:'select',options:[[true,'结案并解锁商品/解除暂停'],[false,'仅复盘，暂不结案']],value:true},
+    ],async b=>{
+      b.close = b.close==='true'||b.close===true;
+      await api(`/api/reauth-reviews/${id}/responsibility`,{method:'POST',body:b});
+      toast('责任复盘完成'+(b.close?'，商品已解锁、结算暂停解除':''),'ok');
+      renderReauthDetail(id); loadNotifications();
+    });
+  }
+}
+async function renderAudits(d){
+  const box=$('#rrAudits');
+  if(!d.audits.length){ box.innerHTML='<span class="muted">本次未发现需要抽查的同品牌近期初鉴记录</span>'; return; }
+  box.innerHTML=`<table><tr><th>抽查单</th><th>寄卖单</th><th>原鉴定师</th><th>结果</th><th>发现</th><th>知识库</th><th></th></tr>
+    ${d.audits.map(a=>`<tr>
+      <td>${a.code}</td><td>${a.consignment_code||a.consignment_id}</td><td>${a.authenticator_name}</td>
+      <td>${a.status==='pending'?'<span class="tag warn">待抽查</span>':({consistent:'<span class="tag ok">一致</span>',mismatch:'<span class="tag bad">不一致</span>',uncertain:'<span class="tag">存疑</span>'})[a.result]}</td>
+      <td class="muted" style="max-width:220px">${a.finding||'—'}</td>
+      <td>${a.promoted_kb?'<span class="tag ok">已沉淀</span>':'未沉淀'}</td>
+      <td id="auditAct${a.id}"></td></tr>`).join('')}</table>`;
+  for (const a of d.audits){
+    const cell=$(`#auditAct${a.id}`); if(!cell) continue;
+    if (a.status==='pending'){
+      cell.innerHTML=`<button class="btn sm" data-do="review">登记抽查结果</button>`;
+      cell.querySelector('[data-do=review]').onclick=()=>modal('同品牌抽查复核 · '+a.code,[
+        {key:'result',label:'抽查结论',type:'select',options:[['consistent','与初鉴一致'],['mismatch','与初鉴不一致'],['uncertain','暂无法确定']]},
+        {key:'finding',label:'抽查发现',type:'textarea',ph:'核验序列号/五金/皮质/走线/票据后的发现'},
+      ],async b=>{
+        await api(`/api/brand-audits/${a.id}/review`,{method:'POST',body:b});
+        toast('抽查结果已登记','ok');
+        if(b.result!=='consistent') setTimeout(()=>promoteModal(a,d.brand,b.finding),300);
+        renderReauthDetail(d.id);
+      });
+    } else if(!a.promoted_kb && a.result!=='consistent'){
+      cell.innerHTML=`<button class="btn sm ghost" data-do="promote">沉淀进知识库</button>`;
+      cell.querySelector('[data-do=promote]').onclick=()=>promoteModal(a,d.brand,a.finding);
+    }
+  }
+}
+function promoteModal(a,brand,finding){
+  modal('将抽查发现沉淀进品牌鉴定知识库 · '+brand,[
+    {key:'title',label:'知识条目标题',value:`${brand} 同类误判防范要点（抽查 ${a.code}）`},
+    {key:'content',label:'内容',type:'textarea',value:finding||''},
+    {key:'keyPoints',label:'鉴定要点（每行一条）',type:'textarea',ph:'要点1\n要点2'},
+  ],async b=>{
+    b.keyPoints=String(b.keyPoints||'').split('\n').map(s=>s.trim()).filter(Boolean);
+    await api(`/api/brand-audits/${a.id}/promote`,{method:'POST',body:b});
+    toast('已更新品牌鉴定知识库，降低同类误判概率','ok'); renderReauthDetail(selectedReauth);
+  });
+}
+async function kbModal(brand){
+  const d=await api('/api/brand-knowledge?brand='+encodeURIComponent(brand||''));
+  modal(`品牌鉴定知识库（${brand||'全部'}）`,[
+    {type:'html',html: d.items.length?d.items.map(k=>`<div style="margin-bottom:12px"><b>${k.title}</b> <span class="tag">${k.brand}</span>
+      <pre class="muted" style="margin-top:5px">${k.content}</pre>
+      <ul style="margin:5px 0 0 16px">${(k.key_points||[]).map(p=>`<li class="muted">${p}</li>`).join('')}</ul></div>`).join(''):'<span class="muted">暂无知识条目</span>'},
+  ],async()=>{}, '关闭');
+  $('#mOk').textContent='关闭';
+}
+
 /* ================= 运营管理 ================= */
 function renderAdminList(){
   $('#listBody').innerHTML = `
@@ -885,8 +1157,10 @@ function renderAdminList(){
     <div class="list-item" data-m="store"><b>📦 仓储费</b><div class="muted" style="font-size:12px">按寄卖单计提仓储费</div></div>
     <div class="list-item" data-m="live"><b>🎥 直播带货</b><div class="muted" style="font-size:12px">直播场次管理</div></div>
     <div class="list-item" data-m="ledger"><b>💰 财务台账</b><div class="muted" style="font-size:12px">全部流水（含争议追溯）</div></div>
+    <div class="list-item" data-m="audits"><b>🔎 品牌抽查队列</b><div class="muted" style="font-size:12px">复鉴推翻触发的同品牌近期鉴定抽查</div></div>
+    <div class="list-item" data-m="kb"><b>📚 品牌鉴定知识库</b><div class="muted" style="font-size:12px">抽查结论沉淀，降低同类误判</div></div>
     <div class="list-item" data-m="bl"><b>⛔ 黑名单管理</b><div class="muted" style="font-size:12px">用户封禁/解封</div></div>`;
-  const map={dash:adminDash,std:adminStd,authperf:adminPerf,ins:adminIns,store:adminStore,live:adminLive,ledger:adminLedger,bl:adminBlacklist};
+  const map={dash:adminDash,std:adminStd,authperf:adminPerf,ins:adminIns,store:adminStore,live:adminLive,ledger:adminLedger,audits:adminAudits,kb:adminKb,bl:adminBlacklist};
   $('#listBody').querySelectorAll('.list-item').forEach(el=>el.onclick=()=>{
     $('#listBody').querySelectorAll('.list-item').forEach(x=>x.classList.toggle('sel',x===el));
     map[el.dataset.m]();
@@ -935,10 +1209,13 @@ async function adminStd(){
 async function adminPerf(){
   const d=await api('/api/authenticators/performance');
   $('#detailTitle').textContent='鉴定师绩效';
-  $('#detailBody').innerHTML=`<table><tr><th>鉴定师</th><th>专长</th><th>总单数</th><th>终局</th><th>真</th><th>假</th><th>存疑</th><th>双人</th><th>被复鉴推翻</th></tr>
+  $('#detailBody').innerHTML=`<table><tr><th>鉴定师</th><th>专长</th><th>总单数</th><th>终局</th><th>真</th><th>假</th><th>存疑</th><th>双人</th><th>复鉴推翻数</th><th>初鉴被推翻</th><th>确认失误</th></tr>
     ${d.items.map(u=>`<tr><td>${u.display_name}</td><td>${u.specialty||'—'}</td><td>${u.total}</td><td>${u.finalized}</td>
       <td>${u.authentic_cnt}</td><td>${u.fake_cnt}</td><td>${u.suspicious_cnt}</td><td>${u.dual_cnt}</td>
-      <td style="color:${u.overturned_by_reauth>0?'var(--bad)':'inherit'}">${u.overturned_by_reauth}</td></tr>`).join('')}</table>`;
+      <td>${u.overturned_by_reauth}</td>
+      <td style="color:${u.initial_overturned>0?'var(--warn)':'inherit'};font-weight:${u.initial_overturned>0?'600':'400'}">${u.initial_overturned}</td>
+      <td style="color:${u.confirmed_errors>0?'var(--bad)':'inherit'};font-weight:${u.confirmed_errors>0?'700':'400'}">${u.confirmed_errors}</td></tr>`).join('')}</table>
+    <div class="muted" style="font-size:12px;margin-top:8px">「初鉴被推翻」=其第1轮鉴定被后续复鉴推翻；「确认失误」=经责任复盘认定为 initial_error，纳入绩效。</div>`;
 }
 async function pickConsignment(ph){
   if (!listCache.length) listCache=(await api('/api/consignments')).items;
@@ -1015,6 +1292,62 @@ async function adminLedger(){
   const d=await api('/api/ledger');
   $('#detailBody').innerHTML=ledgerTable(d.items);
 }
+async function adminAudits(){
+  $('#detailTitle').textContent='品牌抽查队列';
+  const load=async()=>{
+    const d=await api('/api/brand-audits');
+    $('#detailBody').innerHTML=`<table><tr><th>抽查单</th><th>品牌</th><th>品类</th><th>寄卖单</th><th>原鉴定师</th><th>状态</th><th>结果/发现</th><th>知识库</th><th></th></tr>
+      ${d.items.map(a=>`<tr><td>${a.code}</td><td>${a.brand}</td><td>${CAT[a.category]||a.category||'—'}</td>
+        <td>${a.consignment_code||'—'}</td><td>${a.authenticator_name}</td>
+        <td>${a.status==='pending'?'<span class="tag warn">待抽查</span>':'<span class="tag ok">已复核</span>'}</td>
+        <td class="muted" style="max-width:240px">${a.finding||'—'}</td>
+        <td>${a.promoted_kb?'<span class="tag ok">已沉淀</span>':'—'}</td>
+        <td id="adA${a.id}"></td></tr>`).join('')||'<tr><td colspan="9" class="muted">暂无抽查单</td></tr>'}</table>
+      <div class="muted" style="font-size:12px;margin-top:8px">抽查单在「复鉴推翻初鉴」时自动产生（近90天同品牌、初鉴为真、未抽查过，每次最多5单）。</div>`;
+    for(const a of d.items){
+      const cell=$('#adA'+a.id);
+      if(a.status==='pending'){
+        cell.innerHTML='<button class="btn sm" data-go>登记结果</button>';
+        cell.querySelector('[data-go]').onclick=()=>modal('抽查复核 · '+a.code,[
+          {key:'result',label:'抽查结论',type:'select',options:[['consistent','与初鉴一致'],['mismatch','与初鉴不一致'],['uncertain','暂无法确定']]},
+          {key:'finding',label:'发现',type:'textarea'},
+        ],async b=>{ await api('/api/brand-audits/'+a.id+'/review',{method:'POST',body:b}); toast('已登记','ok'); load(); });
+      } else if(!a.promoted_kb && a.result!=='consistent'){
+        cell.innerHTML='<button class="btn sm ghost" data-go>沉淀知识库</button>';
+        cell.querySelector('[data-go]').onclick=()=>promoteModal(a,a.brand,a.finding);
+      }
+    }
+  };
+  load();
+}
+async function adminKb(){
+  $('#detailTitle').textContent='品牌鉴定知识库';
+  const load=async()=>{
+    const d=await api('/api/brand-knowledge');
+    $('#detailBody').innerHTML=
+      `<div class="toolbar"><input id="kbBrand" placeholder="按品牌筛选，如 Chanel" style="width:200px"><button class="btn sm" id="kbFilter">筛选</button>
+        ${['authenticator','admin','ops'].includes(ME.role)?'<button class="btn sm ghost" id="kbAdd">新增知识条目</button>':''}</div>
+      ${d.items.map(k=>`<div class="section"><div class="t">${k.title} <span class="tag">${k.brand}</span>${k.category?`<span class="tag">${CAT[k.category]||k.category}</span>`:''}</div>
+        <div class="c"><pre class="muted">${k.content}</pre>
+        <ul style="margin:6px 0 0 16px">${(k.key_points||[]).map(p=>`<li>${p}</li>`).join('')}</ul>
+        <div class="muted" style="font-size:11px;margin-top:6px">${k.updated_by_name?('维护人 '+k.updated_by_name+' · '):''}${DT(k.created_at)}</div></div></div>`).join('')||'<div class="empty">暂无知识条目</div>'}`;
+    $('#kbFilter').onclick=async()=>{ const v=$('#kbBrand').value.trim(); const d2=await api('/api/brand-knowledge'+(v?'?brand='+encodeURIComponent(v):'')); adminKbRender(d2.items,load); };
+    const add=$('#kbAdd'); if(add) add.onclick=()=>modal('新增品牌知识条目',[
+      {key:'brand',label:'品牌',value:$('#kbBrand')?.value||''},
+      {key:'category',label:'品类',type:'select',required:false,options:[['','—'],['bag','箱包'],['watch','腕表'],['jewelry','珠宝'],['fashion','鞋服']]},
+      {key:'title',label:'标题'},
+      {key:'content',label:'内容',type:'textarea'},
+      {key:'keyPoints',label:'鉴定要点（每行一条）',type:'textarea'},
+    ],async b=>{ b.keyPoints=String(b.keyPoints||'').split('\n').map(s=>s.trim()).filter(Boolean); b.category=b.category||null;
+      await api('/api/brand-knowledge',{method:'POST',body:b}); toast('已保存','ok'); load(); });
+  };
+  load();
+}
+function adminKbRender(items,load){
+  $('#detailBody').innerHTML = items.map(k=>`<div class="section"><div class="t">${k.title} <span class="tag">${k.brand}</span></div>
+    <div class="c"><pre class="muted">${k.content}</pre><ul style="margin:6px 0 0 16px">${(k.key_points||[]).map(p=>`<li>${p}</li>`).join('')}</ul></div></div>`).join('')||'<div class="empty">无匹配条目</div>';
+}
+
 async function adminBlacklist(){
   $('#detailTitle').textContent='黑名单管理';
   if (!usersCache.length) usersCache=(await api('/api/users')).items;

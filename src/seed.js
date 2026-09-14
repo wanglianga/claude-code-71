@@ -145,6 +145,48 @@ async function seedDemo(c) {
     await c.query(
       `INSERT INTO insurance_policies (consignment_id,declared_value,premium,coverage_stage,status)
        VALUES ($1,220000,1100,'all','active')`, [cid]);
+
+    // 同品牌（Chanel）近期初鉴记录：复鉴推翻时用于触发品牌抽查
+    const fionaId = (await c.query(`SELECT id FROM users WHERE username='auth_fiona'`)).rows[0].id;
+    const evanId = (await c.query(`SELECT id FROM users WHERE username='auth_evan'`)).rows[0].id;
+    const graceId = (await c.query(`SELECT id FROM users WHERE username='wh_grace'`)).rows[0].id;
+    const sameBrand = [
+      ['C-3003', 'Chanel', 'Le Boy 中号 荔枝牛皮', 'bag', 48000, fionaId, 'authenticated', 'S'],
+      ['C-3004', 'Chanel', 'CF 大号 羊皮', 'bag', 72000, evanId, 'listed', 'N'],
+      ['C-3005', 'Chanel', 'Wallet on Chain 19', 'bag', 31000, fionaId, 'authenticated', 'A'],
+    ];
+    for (const [code, brand, model, category, declared, authId, st, grade] of sameBrand) {
+      const { rows: [s] } = await c.query(
+        `INSERT INTO consignments
+          (code,seller_id,category,brand,model,serial_no,purchase_proof,accessories,declared_value,
+           high_value,inbound_carrier,inbound_tracking,status,authenticity,grade)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,FALSE,'SF','SF-AUDIT',$10,'authentic',$11)
+         RETURNING id`,
+        [code, alice.id, category, brand, model, `CH-${code}`, '专柜发票', JSON.stringify(['防尘袋']), declared, st, grade]);
+      await c.query(
+        `INSERT INTO status_confirmations (consignment_id,checkpoint,confirmer_id,condition_summary,matches_previous)
+         VALUES ($1,'inbound',$2,'签收复核一致',TRUE)`, [s.id, graceId]);
+      await c.query(
+        `INSERT INTO authentications
+          (consignment_id,round,is_final,primary_authenticator,result,grade,
+           serial_check,hardware_check,leather_check,stitching_check,receipt_check,case_history,summary)
+         VALUES ($1,1,TRUE,$2,'authentic',$3,'序列号吻合','刻字清晰','纹理正常','走线均匀','票据一致','未见仿品案例','初鉴正品')`,
+        [s.id, authId, grade]);
+    }
+
+    // 品牌鉴定知识库预置（Chanel），鉴定弹窗会引用同品牌要点
+    await c.query(
+      `INSERT INTO brand_knowledge (brand,category,title,content,key_points,updated_by)
+       VALUES ('Chanel','bag','Classic Flap 五金与序列号核验要点',
+         'Chanel Classic Flap 正品五金刻字深浅均匀、镀层温润；序列号卡字体与年份批次需与品牌数据库比对；鱼子酱牛皮颗粒感强、有自然香味。高仿常见五金刻字过深、激光码边缘锐利、皮质偏塑料感。',
+         $1, $2)
+       ON CONFLICT (brand,title) DO NOTHING`,
+      [JSON.stringify([
+        '五金刻字深浅均匀、激光码边缘柔和',
+        '序列号卡字体与年份批次对照品牌数据库',
+        '鱼子酱牛皮颗粒自然、走线斜皮纹路对版',
+        '小票/身份卡信息与商品必须一致',
+      ]), fionaId]);
   }
 }
 

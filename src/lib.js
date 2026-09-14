@@ -171,3 +171,36 @@ export async function ledger(client, e) {
     [e.consignmentId ?? null, e.orderId ?? null, e.disputeId ?? null,
      e.account, e.entryType, e.direction, money(e.amount), e.evidenceRef ?? null, e.createdBy ?? null]);
 }
+
+/** 站内通知 */
+export async function notify(client, { userId, title, content, category = 'system', linkType = null, linkId = null }) {
+  if (!userId) return null;
+  const { rows } = await client.query(
+    `INSERT INTO notifications (user_id,title,content,category,link_type,link_id)
+     VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+    [userId, title, content, category, linkType, linkId ?? null]);
+  return rows[0];
+}
+
+/** 初鉴/复鉴七个维度的差异描述 */
+export function diffAuthentications(initial, reauth) {
+  const RESULT_TXT = { authentic: '正品', fake: '假冒', suspicious: '存疑' };
+  const lines = [];
+  if (initial.result !== reauth.result) {
+    lines.push(`真伪结论：${RESULT_TXT[initial.result]} → ${RESULT_TXT[reauth.result]}`);
+  }
+  if (initial.grade !== reauth.grade) {
+    lines.push(`成色等级：${initial.grade || '—'} → ${reauth.grade || '—'}`);
+  }
+  const dims = [
+    ['serial_check', '序列号'], ['hardware_check', '五金'], ['leather_check', '皮质'],
+    ['stitching_check', '走线'], ['movement_check', '机芯'], ['receipt_check', '票据'],
+    ['case_history', '历史案例'],
+  ];
+  for (const [key, label] of dims) {
+    const a = (initial[key] || '').trim();
+    const b = (reauth[key] || '').trim();
+    if (a !== b) lines.push(`${label}：「${a || '未填'}」→「${b || '未填'}」`);
+  }
+  return lines.length ? lines.join('\n') : '两次结论一致，无实质差异';
+}

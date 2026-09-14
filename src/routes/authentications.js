@@ -29,11 +29,19 @@ export default async function authenticationRoutes(fastify) {
               COUNT(*) FILTER (WHERE a.result='fake' AND a.is_final)      AS fake_cnt,
               COUNT(*) FILTER (WHERE a.result='suspicious' AND a.is_final) AS suspicious_cnt,
               COUNT(*) FILTER (WHERE a.second_authenticator IS NOT NULL)  AS dual_cnt,
-              COUNT(a.overturned OR NULL)                          AS overturned_by_reauth
+              COUNT(a.overturned OR NULL)                          AS overturned_by_reauth,
+              (SELECT COUNT(*) FROM authentications a0
+                 WHERE a0.primary_authenticator=u.id AND a0.round=1
+                   AND EXISTS (SELECT 1 FROM authentications ax
+                               WHERE ax.consignment_id=a0.consignment_id
+                                 AND ax.round>a0.round AND ax.overturned=TRUE)) AS initial_overturned,
+              (SELECT COUNT(*) FROM reauth_reviews rr
+                 WHERE rr.initial_authenticator=u.id
+                   AND rr.responsibility='initial_error') AS confirmed_errors
        FROM users u
        LEFT JOIN authentications a ON a.primary_authenticator=u.id
        WHERE u.role='authenticator'
-       GROUP BY u.id ORDER BY total DESC`);
+       GROUP BY u.id ORDER BY initial_overturned DESC, total DESC`);
     return { items: rows };
   });
 

@@ -39,6 +39,7 @@ export default async function orderRoutes(fastify) {
     if (req.user.role !== 'buyer' && req.user.role !== 'admin') throw new HttpError(403, '仅买家可下单');
     return tx(async (c) => {
       const con = await getConsignment(c, id);
+      if (con.locked) throw new HttpError(409, `商品已被平台锁定（${con.lock_reason || '复鉴/争议处理中'}），暂停销售`);
       if (con.status !== 'listed') throw new HttpError(409, '该商品当前不可购买');
       const dup = await c.query(`SELECT 1 FROM orders WHERE consignment_id=$1 AND buyer_id=$2 AND status<>'refunded'`,
         [id, req.user.uid]);
@@ -129,6 +130,10 @@ export default async function orderRoutes(fastify) {
       const isBuyer = Number(o.buyer_id) === req.user.uid;
       if (!isBuyer && !['ops', 'admin', 'finance'].includes(req.user.role)) throw new HttpError(403, '仅买家或平台可完结订单');
       if (o.status !== 'delivered') throw new HttpError(409, '仅已签收订单可完结');
+      // 复鉴/争议导致的结算暂停：不得放款
+      if (o.settlement_paused) {
+        throw new HttpError(409, `该订单结算已暂停（${o.settlement_pause_reason || '复鉴/争议处理中'}），须在复鉴案件/争议裁决后才能放款`);
+      }
       // 售后期限内禁止提前放款：订单/寄卖单/资金流水均不得变化
       if (!o.aftersales_until) throw new HttpError(409, '该订单缺少售后期限记录，不能放款');
       const until = new Date(o.aftersales_until);

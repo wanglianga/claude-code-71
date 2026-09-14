@@ -261,6 +261,11 @@ export default async function disputeRoutes(fastify) {
           nextStatus = 'destroyed';
           break;
       }
+      // 争议已裁决：解除复鉴导致的商品锁与结算暂停（资金以本裁决为准）
+      await c.query(`UPDATE consignments SET locked=FALSE, lock_reason=NULL WHERE id=$1 AND locked=TRUE`, [con.id]);
+      if (order) {
+        await c.query(`UPDATE orders SET settlement_paused=FALSE, settlement_pause_reason=NULL WHERE id=$1`, [order.id]);
+      }
       await c.query(`UPDATE consignments SET status=$1, updated_at=now() WHERE id=$2`, [nextStatus, con.id]);
 
       await logEvent(c, {
