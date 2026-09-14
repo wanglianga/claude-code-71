@@ -1,0 +1,58 @@
+# Environment and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*secret*
+*token*
+*credential*
+
+# Dependencies and build output
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+build/
+**/build/
+target/
+coverage/
+*.log
+
+# Caches, temporary files, and local databases
+.cache/
+**/.cache/
+.playwright-cli/
+output/playwright/
+tmp/
+temp/
+*.tmp
+*.swp
+*.db
+*.sqlite
+*.sqlite3
+.DS_Store
+Thumbs.db
+
+# Claude Code, trajectories, QA artifacts, memory, and skills
+.claude/
+**/.claude/
+CLAUDE.md
+**/CLAUDE.md
+*_traces/
+traces/
+*.jsonl
+*qa-report*
+*qa_report*
+*QA*.md
+memory/
+**/memory/
+skill/
+skills/
+**/skill/
+**/skills/
+
+# IDE metadata
+.idea/
+.vscode/

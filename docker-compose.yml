@@ -1,0 +1,38 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-lux}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-luxpass}
+      POSTGRES_DB: ${POSTGRES_DB:-luxconsign}
+    # 数据库端口不发布到宿主，仅 compose 内网通过服务名 db 访问
+    volumes:
+      - dbdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-lux} -d ${POSTGRES_DB:-luxconsign}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  app:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATABASE_URL: postgres://${POSTGRES_USER:-lux}:${POSTGRES_PASSWORD:-luxpass}@db:5432/${POSTGRES_DB:-luxconsign}
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-prod}
+      SEED_ON_START: ${SEED_ON_START:-true}
+    ports:
+      - "${CC_PUBLISH_PORT}:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3000/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+
+volumes:
+  dbdata:
