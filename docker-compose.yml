@@ -25,6 +25,7 @@ services:
       DATABASE_URL: postgres://${POSTGRES_USER:-lux}:${POSTGRES_PASSWORD:-luxpass}@db:5432/${POSTGRES_DB:-luxconsign}
       JWT_SECRET: ${JWT_SECRET:-change-me-in-prod}
       SEED_ON_START: ${SEED_ON_START:-true}
+      AFTERSALES_DAYS: ${AFTERSALES_DAYS:-7}
     ports:
       - "${CC_PUBLISH_PORT}:3000"
     healthcheck:

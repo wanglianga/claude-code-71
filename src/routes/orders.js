@@ -4,7 +4,7 @@ import {
   latestQuote, genCode, money, ledger, openDispute,
 } from '../lib.js';
 
-const AFTERSALES_DAYS = 7;
+const AFTERSALES_DAYS = Number(process.env.AFTERSALES_DAYS ?? 7);
 
 async function getOrderWithConsignment(client, orderId) {
   const { rows } = await client.query(
@@ -121,7 +121,7 @@ export default async function orderRoutes(fastify) {
     });
   });
 
-  // 确认完成：担保放款（卖家到手 + 平台佣金入账）
+  // 确认完成：售后期满后担保放款（卖家到手 + 平台佣金入账）
   fastify.post('/api/orders/:id/complete', { onRequest: auth }, async (req) => {
     const orderId = Number(req.params.id);
     return tx(async (c) => {
@@ -129,6 +129,15 @@ export default async function orderRoutes(fastify) {
       const isBuyer = Number(o.buyer_id) === req.user.uid;
       if (!isBuyer && !['ops', 'admin', 'finance'].includes(req.user.role)) throw new HttpError(403, '仅买家或平台可完结订单');
       if (o.status !== 'delivered') throw new HttpError(409, '仅已签收订单可完结');
+      // 售后期限内禁止提前放款：订单/寄卖单/资金流水均不得变化
+      if (!o.aftersales_until) throw new HttpError(409, '该订单缺少售后期限记录，不能放款');
+      const until = new Date(o.aftersales_until);
+      const now = new Date();
+      if (now < until) {
+        const leftMs = until - now;
+        const days = Math.ceil(leftMs / 864e5);
+        throw new HttpError(409, `售后保护期未满（截止 ${until.toISOString().slice(0, 10)}，约剩 ${days} 天），担保款暂不能放款给卖家`);
+      }
       await c.query(`UPDATE orders SET status='completed' WHERE id=$1`, [orderId]);
       await c.query(`UPDATE consignments SET status='completed', updated_at=now() WHERE id=$1`, [o.consignment_id]);
       // 托管款清分

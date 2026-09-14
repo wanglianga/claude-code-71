@@ -333,7 +333,13 @@ function modal(title, fields, onOk, okText='提交'){
 }
 const actBtn = (label, fn, cls='') => `<button class="btn sm ${cls}" data-act="${label}">${label}</button>`;
 function bindActions(box, map){
-  box.querySelectorAll('[data-act]').forEach(b=>b.onclick=()=>map[b.dataset.act]&&map[b.dataset.act]());
+  box.querySelectorAll('[data-act]').forEach(b=>b.onclick=()=>{
+    const fn = map[b.dataset.act];
+    if (!fn) return;
+    Promise.resolve()
+      .then(()=>fn())
+      .catch((e)=>toast(e.message || String(e), 'err'));
+  });
 }
 
 /* ================= 寄卖单详情 ================= */
@@ -673,7 +679,7 @@ async function renderOrderDetail(id){
   let d;
   try{
     const all=(await api('/api/orders')).items;
-    d=all.find(o=>o.id===id);
+    d=all.find(o=>Number(o.id)===Number(id));
     const cd=await api('/api/consignments/'+d.consignment_id);
     $('#detailTitle').innerHTML = `订单 ${d.code} <span class="tag info">${cd.code}</span>`;
     $('#detailBody').innerHTML = `
@@ -696,7 +702,7 @@ async function renderOrderDetail(id){
     if (['warehouse','ops','admin'].includes(ME.role)&&d.status==='placed') acts.push(['平台发货（高价值需先出库复核）',()=>orderShip(d,cd)]);
     if (ME.role==='buyer'&&Number(d.buyer_id)===ME.id&&d.status==='shipping') acts.push(['签收验收（上传收货视频）',()=>orderReceive(d)]);
     if ((ME.role==='buyer'&&Number(d.buyer_id)===ME.id&&d.status==='delivered')||['ops','admin'].includes(ME.role)&&d.status==='delivered')
-      acts.push(['确认完成·担保放款',()=>orderComplete(d)]);
+      acts.push(['确认完成·售后期满放款',()=>orderComplete(d)]);
     if (ME.role==='buyer'&&Number(d.buyer_id)===ME.id&&d.status==='delivered') acts.push(['申请退货（重核保价物流）',()=>orderReturn(d)]);
     if (['warehouse','admin'].includes(ME.role)) acts.push(['验收买家退货',()=>returnReceive(d)]);
     if (['finance','admin'].includes(ME.role)&&['returned','delivered'].includes(d.status)) acts.push(['财务退款',()=>orderRefund(d)]);
