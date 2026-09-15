@@ -248,9 +248,23 @@ export default async function sellerRoutes(fastify) {
   fastify.post('/api/consignments/:id/withdraw', { onRequest: auth }, async (req) => {
     const id = Number(req.params.id);
     const b = req.body || {};
-    if (!b.openLogisticsDispute) requireBody(b, ['returnCarrier', 'returnTracking']);
-    b.sellerConfirmation = b.sellerConfirmation ?? true;
-    if (!b.sellerConfirmation) throw new HttpError(400, '必须由卖家确认后才能撤回');
+
+    // 保价/物流异议分支：不生成撤回/结算记录，沿用争议流程（无需撤回确认）
+    const isLogisticsDispute = b.openLogisticsDispute === true;
+
+    // 卖家确认门禁：必须显式提交布尔 true，且附非空确认文本；
+    // 缺失、false、字符串 "true"/"false"、数字、空白文本一律拒绝。
+    if (!isLogisticsDispute) {
+      if (b.sellerConfirmation !== true || typeof b.sellerConfirmation !== 'boolean') {
+        throw new HttpError(400, '必须由卖家显式确认（sellerConfirmation 须为布尔 true）后才能撤回');
+      }
+      const confirmText = typeof b.sellerConfirmationText === 'string' ? b.sellerConfirmationText.trim() : '';
+      if (!confirmText) {
+        throw new HttpError(400, '必须填写非空的卖家确认说明（sellerConfirmationText）后才能撤回');
+      }
+      b.sellerConfirmationText = confirmText;
+      requireBody(b, ['returnCarrier', 'returnTracking']);
+    }
     return tx(async (c) => {
       const con = await getConsignment(c, id);
       if (Number(con.seller_id) !== req.user.uid && !['ops', 'admin'].includes(req.user.role)) {
@@ -261,7 +275,7 @@ export default async function sellerRoutes(fastify) {
         throw new HttpError(409, `状态 ${con.status} 不可撤回`);
       }
 
-      if (b.openLogisticsDispute) {
+      if (isLogisticsDispute) {
         // 保价/物流异议 → 走争议（复用既有争议编排），不生成撤回结算
         const dis = await openDispute(c, {
           consignment: con, order: null, opener: req.user, type: 'withdraw_logistics',

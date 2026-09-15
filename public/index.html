@@ -796,15 +796,18 @@ async function withdrawForm(d){
     {key:'returnLogisticsFee',label:'退回物流费（预估，元）',type:'number',value:150},
     {key:'returnCarrier',label:'退回承运人',value:'SF Express'},
     {key:'returnTracking',label:'退回物流单号'},
-    {key:'confirm',label:'卖家确认',type:'select',options:[[true,'我确认撤回并知悉仓储/保险/退回物流费用'],[false,'暂不确认']],value:true},
+    {key:'confirm',label:'卖家确认（必须显式选择确认）',type:'select',
+      options:[[false,'暂不确认'],[true,'我确认撤回并知悉仓储/保险/退回物流费用']],value:false},
+    {key:'sellerConfirmationText',label:'确认说明（必填，将写入撤回记录）',value:'本人确认撤回寄售商品，并知悉仓储费、保险费与退回物流费由本人承担。'},
   ], async b=>{
     b.returnLogisticsFee=Number(b.returnLogisticsFee||0);
-    b.confirm=b.confirm==='true'||b.confirm===true;
-    if(!b.confirm) throw new Error('必须由卖家确认后才能撤回');
+    b.sellerConfirmation = b.confirm==='true' || b.confirm===true;
+    if(!b.sellerConfirmation) throw new Error('必须由卖家显式确认后才能撤回');
+    b.sellerConfirmationText=(b.sellerConfirmationText||'').trim();
+    if(!b.sellerConfirmationText) throw new Error('必须填写非空的卖家确认说明');
     const wv=await api(`/api/consignments/${d.id}/withdraw-preview`,{method:'POST',body:{returnLogisticsFee:b.returnLogisticsFee}});
     if(!confirm(`确认撤回？\n将通知 ${wv.willNotifyOffers} 位议价买家并释放保证金 ¥${wv.willReleaseDeposit}\n费用合计 ¥${wv.totalDeduction}（仓储 ¥${wv.signals.storageFeeTotal}+保险 ¥${wv.signals.insuranceFeeTotal}+物流 ¥${b.returnLogisticsFee}）`))
       throw new Error('已取消撤回');
-    b.sellerConfirmation=true; b.sellerConfirmationText='卖家确认撤回并知悉相关费用';
     const r=await api(`/api/consignments/${d.id}/withdraw`,{method:'POST',body:b});
     toast(`撤回成功：释放保证金 ¥${r.releasedDeposit}，结算单已生成`,'ok'); refresh();
   });
