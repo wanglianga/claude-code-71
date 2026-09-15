@@ -431,3 +431,66 @@ CREATE TABLE IF NOT EXISTS brand_knowledge (
   UNIQUE (brand, title)
 );
 CREATE INDEX IF NOT EXISTS idx_kb_brand ON brand_knowledge(brand);
+
+-- ============================================================================
+-- 买家退回状态变化：结构化退回复核（划痕/附件/吊牌/防拆扣 + 开箱视频 + 经办人）
+-- ============================================================================
+
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='orders' AND column_name='refund_frozen') THEN
+    ALTER TABLE orders ADD COLUMN refund_frozen BOOLEAN NOT NULL DEFAULT FALSE;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='orders' AND column_name='refund_freeze_reason') THEN
+    ALTER TABLE orders ADD COLUMN refund_freeze_reason TEXT;
+  END IF;
+END $$;
+
+CREATE TABLE IF NOT EXISTS return_inspections (
+  id                    BIGSERIAL PRIMARY KEY,
+  order_id              BIGINT NOT NULL REFERENCES orders(id),
+  consignment_id        BIGINT NOT NULL REFERENCES consignments(id),
+  dispute_id            BIGINT REFERENCES disputes(id),
+
+  -- 仓库经办人 + 开箱视频（必录）
+  warehouse_user_id     BIGINT NOT NULL REFERENCES users(id),
+  open_box_video        TEXT,
+  warehouse_note        TEXT,
+
+  -- 四项核对（与出库状态复核/买家收货证据比对）
+  scratch_status        TEXT NOT NULL CHECK (scratch_status IN ('consistent','new_scratch','worse')),
+  scratch_detail        TEXT,
+  accessories_status    TEXT NOT NULL CHECK (accessories_status IN ('all_present','missing','swapped','damaged')),
+  accessories_expected  JSONB NOT NULL DEFAULT '[]',   -- 应退附件（取自寄卖单）
+  accessories_found     JSONB NOT NULL DEFAULT '[]',   -- 实到附件
+  accessories_detail    TEXT,
+  tag_status            TEXT NOT NULL CHECK (tag_status IN ('intact','missing','damaged')),
+  tamper_seal_status    TEXT NOT NULL CHECK (tamper_seal_status IN ('intact','removed','damaged')),
+  tamper_seal_detail    TEXT,
+
+  -- 平台证据（仓库）
+  platform_photos       JSONB NOT NULL DEFAULT '[]',
+
+  -- 买家解释（与平台证据并列保存）
+  buyer_explanation     TEXT,
+  buyer_evidence        JSONB NOT NULL DEFAULT '[]',
+  buyer_explained_at    TIMESTAMPTZ,
+  buyer_user_id         BIGINT REFERENCES users(id),
+
+  -- 结论与退款影响
+  result                TEXT NOT NULL CHECK (result IN ('consistent','changed')),
+  -- 防拆扣被拆除对退款的单独影响
+  tamper_seal_impact    TEXT,
+  -- 裁决：退款影响与赔付责任
+  refund_impact         TEXT CHECK (refund_impact IN ('full_refund','partial_refund','refund_denied')),
+  refund_impact_detail  TEXT,
+  deduct_amount         NUMERIC(12,2) NOT NULL DEFAULT 0,  -- 部分退款时扣除（买家承担）
+  responsibility        TEXT CHECK (responsibility IN ('buyer','platform','logistics','seller','none')),
+  responsibility_detail TEXT,
+  reviewed_by           BIGINT REFERENCES users(id),
+  reviewed_at           TIMESTAMPTZ,
+
+  created_at            TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_return_insp_order ON return_inspections(order_id);
+CREATE INDEX IF NOT EXISTS idx_return_insp_dispute ON return_inspections(dispute_id);

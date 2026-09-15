@@ -23,7 +23,7 @@ async function disputeDetail(client, id) {
      WHERE d.id=$1`, [id]);
   if (!d.rows[0]) throw new HttpError(404, '争议不存在');
   const dis = d.rows[0];
-  const [msgs, led, auths, confs] = await Promise.all([
+  const [msgs, led, auths, confs, insps] = await Promise.all([
     client.query(
       `SELECT m.*, u.display_name AS author_name FROM dispute_messages m
        JOIN users u ON u.id=m.author_id WHERE m.dispute_id=$1 ORDER BY m.id`, [id]),
@@ -39,8 +39,15 @@ async function disputeDetail(client, id) {
     client.query(
       `SELECT s.*, u.display_name AS confirmer_name FROM status_confirmations s
        JOIN users u ON u.id=s.confirmer_id WHERE s.consignment_id=$1 ORDER BY s.id`, [dis.consignment_id]),
+    client.query(
+      `SELECT ri.*, w.display_name AS warehouse_name, bu.display_name AS buyer_name
+       FROM return_inspections ri
+       JOIN users w ON w.id=ri.warehouse_user_id
+       LEFT JOIN users bu ON bu.id=ri.buyer_user_id
+       WHERE ri.dispute_id=$1 ORDER BY ri.id`, [id]),
   ]);
-  return { ...dis, messages: msgs.rows, ledger: led.rows, authentications: auths.rows, confirmations: confs.rows };
+  return { ...dis, messages: msgs.rows, ledger: led.rows, authentications: auths.rows,
+           confirmations: confs.rows, returnInspections: insps.rows };
 }
 
 export default async function disputeRoutes(fastify) {
@@ -203,10 +210,23 @@ export default async function disputeRoutes(fastify) {
       const order = d.order_id ? await getOrder(c, d.order_id) : null;
 
       // ---- 财务入账（每笔引用争议编号，可追溯鉴定/交付证据） ----
+      if (order) {
+        // 争议裁决即对冻结的最终处理：解除退款冻结
+        await c.query(`UPDATE orders SET refund_frozen=FALSE, refund_freeze_reason=NULL WHERE id=$1`, [order.id]);
+      }
       if (refund > 0 && order) {
         await ledger(c, { consignmentId: con.id, orderId: order.id, disputeId: id, account: 'buyer',
           entryType: 'refund', direction: 'credit', amount: refund, evidenceRef, createdBy: req.user.uid });
         await c.query(`UPDATE orders SET status='refunded' WHERE id=$1`, [order.id]);
+        // 部分退款时，扣除额作为买家承担（记录在退回复核单）
+        const less = money(Number(order.amount) - Number(refund));
+        if (less > 0) {
+          await c.query(
+            `UPDATE return_inspections SET deduct_amount=$1::numeric, refund_impact='partial_refund'
+             WHERE dispute_id=$2::bigint AND refund_impact IS NULL`, [less, id]);
+        }
+      } else if (order && b.itemDisposition === 'keep_buyer') {
+        // 无退款、买家保留：订单保持/置完成
       }
       if (comp > 0) {
         await ledger(c, { consignmentId: con.id, orderId: order?.id ?? null, disputeId: id,

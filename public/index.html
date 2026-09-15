@@ -789,14 +789,17 @@ async function renderOrderDetail(id){
     d=all.find(o=>Number(o.id)===Number(id));
     const cd=await api('/api/consignments/'+d.consignment_id);
     $('#detailTitle').innerHTML = `订单 ${d.code} <span class="tag info">${cd.code}</span>`;
+    const insp = await api(`/api/orders/${d.id}/return-inspections`).catch(()=>({items:[]}));
     $('#detailBody').innerHTML = `
+      ${d.settlement_paused?`<div class="pause-banner">⏸ 该订单结算已暂停：${d.settlement_pause_reason||''}</div>`:''}
+      ${d.refund_frozen?`<div class="lock-banner">🧊 退款已冻结：${d.refund_freeze_reason||'退回复核状态异常，争议处理中'}</div>`:''}
       <div class="section"><div class="t">订单信息</div><div class="c">
         <div style="margin-bottom:8px"><b>${cd.brand} ${cd.model}</b> · ${cd.seller_name} 的寄卖单 ${cd.code}</div>
         <div class="kv">
           <span class="k">成交金额</span><span class="price">${fmt(d.amount)}</span>
           <span class="k">佣金费率</span><span>${Number(d.commission_rate)*100}%（平台佣金 ${fmt(d.platform_fee)}）</span>
           <span class="k">卖家应结</span><span>${fmt(d.seller_proceeds)}（担保托管，完结放款）</span>
-          <span class="k">状态</span><span>${d.status}</span>
+          <span class="k">状态</span><span>${d.status}${d.refund_frozen?' · <b style="color:var(--bad)">退款冻结</b>':''}</span>
           <span class="k">出库物流</span><span>${d.outbound_carrier?d.outbound_carrier+' / '+d.outbound_tracking:'—'}</span>
           <span class="k">收货视频</span><span>${d.receiving_video_url||'未上传'}</span>
           <span class="k">签收时间</span><span>${DT(d.delivered_at)}</span>
@@ -804,6 +807,7 @@ async function renderOrderDetail(id){
         </div>
         <div class="pill-actions" id="oAct"></div>
       </div></div>
+      ${returnInspectionBlock(insp.items)}
       ${confirmBlock(cd)} ${await timelineBlock(cd.id)}`;
     const acts=[];
     if (['warehouse','ops','admin'].includes(ME.role)&&d.status==='placed') acts.push(['平台发货（高价值需先出库复核）',()=>orderShip(d,cd)]);
@@ -811,8 +815,14 @@ async function renderOrderDetail(id){
     if ((ME.role==='buyer'&&Number(d.buyer_id)===ME.id&&d.status==='delivered')||['ops','admin'].includes(ME.role)&&d.status==='delivered')
       acts.push(['确认完成·售后期满放款',()=>orderComplete(d)]);
     if (ME.role==='buyer'&&Number(d.buyer_id)===ME.id&&d.status==='delivered') acts.push(['申请退货（重核保价物流）',()=>orderReturn(d)]);
-    if (['warehouse','admin'].includes(ME.role)) acts.push(['验收买家退货',()=>returnReceive(d)]);
-    if (['finance','admin'].includes(ME.role)&&['returned','delivered'].includes(d.status)) acts.push(['财务退款',()=>orderRefund(d)]);
+    if (['warehouse','admin'].includes(ME.role)) acts.push(['退回复核（划痕/附件/吊牌/防拆扣）',()=>returnReceive(d)]);
+    // 买家就冻结的退回复核提交解释
+    const pendingInsp = (insp.items||[]).find(x=>x.result==='changed' && !x.buyer_explanation);
+    if (ME.role==='buyer'&&Number(d.buyer_id)===ME.id&&pendingInsp)
+      acts.push(['提交退货解释与证据',()=>buyerExplain(d,pendingInsp)]);
+    if (['cs','finance','admin'].includes(ME.role)&&(insp.items||[]).some(x=>x.result==='changed'&&!x.refund_impact))
+      acts.push(['退回复核责任认定',()=>returnResolve(d,(insp.items||[]).find(x=>x.result==='changed'&&!x.refund_impact))]);
+    if (['finance','admin'].includes(ME.role)&&['returned','delivered'].includes(d.status)&&!d.refund_frozen) acts.push(['财务退款',()=>orderRefund(d)]);
     if (['cs','ops','admin','warehouse'].includes(ME.role)) acts.push(['就该订单开争议',()=>{selectedId=cd.id;openDisputeForm(cd,null);}]);
     const box=$('#oAct');
     if (acts.length){
@@ -820,6 +830,69 @@ async function renderOrderDetail(id){
       const map={}; acts.forEach(([l,fn])=>map[l]=fn); bindActions(box,map);
     }
   }catch(e){toast(e.message,'err');}
+}
+function returnInspectionBlock(items){
+  if(!items||!items.length) return '';
+  const SCR={consistent:'一致',new_scratch:'新增划痕',worse:'明显变差'};
+  const ACC={all_present:'齐全',missing:'缺失',swapped:'疑似调换',damaged:'损坏'};
+  const TAG={intact:'完好',missing:'缺失',damaged:'损坏'};
+  const SEAL={intact:'完好',removed:'已拆除',damaged:'损坏'};
+  const IMPACT={full_refund:'全额退款',partial_refund:'部分退款',refund_denied:'不予退款'};
+  const RESP={buyer:'买家',platform:'平台',logistics:'物流',seller:'卖家',none:'无责'};
+  return `<div class="section"><div class="t">退回复核记录（仓库开箱证据 vs 买家解释）</div><div class="c">
+    ${items.map(x=>`
+      <div style="border:1px solid var(--line);border-radius:8px;padding:11px;margin-bottom:11px">
+        <div style="margin-bottom:7px">
+          <span class="tag ${x.result==='consistent'?'ok':'bad'}">${x.result==='consistent'?'四项一致':'状态变化·退款冻结'}</span>
+          <span class="tag">经办人 ${x.warehouse_name}</span>
+          <span class="muted" style="font-size:11px">${DT(x.created_at)}</span>
+        </div>
+        <table>
+          <tr><th>核对项</th><th>结果</th><th>说明</th></tr>
+          <tr><td>划痕/成色</td><td><span class="tag ${x.scratch_status==='consistent'?'ok':'bad'}">${SCR[x.scratch_status]}</span></td><td class="muted">${x.scratch_detail||'—'}</td></tr>
+          <tr><td>附件</td><td><span class="tag ${x.accessories_status==='all_present'?'ok':'bad'}">${ACC[x.accessories_status]}</span></td>
+            <td class="muted">应退：${(x.accessories_expected||[]).join('、')||'—'}<br>实到：${(x.accessories_found||[]).join('、')||'—'}${x.accessories_detail?'<br>'+x.accessories_detail:''}</td></tr>
+          <tr><td>吊牌</td><td><span class="tag ${x.tag_status==='intact'?'ok':'bad'}">${TAG[x.tag_status]}</span></td><td></td></tr>
+          <tr><td>防拆扣</td><td><span class="tag ${x.tamper_seal_status==='intact'?'ok':'bad'}">${SEAL[x.tamper_seal_status]}</span></td><td class="muted">${x.tamper_seal_detail||'—'}</td></tr>
+        </table>
+        ${x.tamper_seal_impact?`<div class="lock-banner" style="margin:8px 0">🔩 防拆扣影响（单独记录）：${x.tamper_seal_impact}</div>`:''}
+        <div class="muted" style="font-size:12px;margin:7px 0">开箱视频：${x.open_box_video?`<a>${x.open_box_video}</a>`:'未提供'}　平台照片：${(x.platform_photos||[]).join('、')||'无'}</div>
+        <div class="grid2" style="gap:10px">
+          <div style="background:#14161f;border:1px solid var(--line);border-radius:7px;padding:9px">
+            <b style="font-size:12.5px">🏢 平台证据</b><pre class="muted" style="margin-top:5px">${x.warehouse_note||'—'}</pre></div>
+          <div style="background:#14161f;border:1px solid var(--line);border-radius:7px;padding:9px">
+            <b style="font-size:12.5px">🙋 买家解释（并列保存）</b>
+            ${x.buyer_explanation?`<pre style="margin-top:5px">${x.buyer_explanation}</pre><div class="muted" style="font-size:11px">证据：${(x.buyer_evidence||[]).join('、')||'无'} · ${x.buyer_name} · ${DT(x.buyer_explained_at)}</div>`:'<div class="muted" style="margin-top:5px">买家尚未提交</div>'}
+          </div>
+        </div>
+        ${x.refund_impact?`<div style="margin-top:9px">
+          <span class="tag ${x.refund_impact==='full_refund'?'ok':x.refund_impact==='refund_denied'?'bad':'warn'}">退款影响：${IMPACT[x.refund_impact]}${Number(x.deduct_amount)>0?'（扣除 ¥'+Number(x.deduct_amount).toLocaleString()+'）':''}</span>
+          <span class="tag">责任：${RESP[x.responsibility]||'—'}</span>
+          <pre class="muted" style="margin-top:6px">${x.refund_impact_detail||''}</pre></div>`:''}
+      </div>`).join('')}
+  </div></div>`;
+}
+function buyerExplain(d,insp){
+  modal('买家退货解释（与平台开箱证据并列保存）',[
+    {key:'explanation',label:'对划痕/附件/吊牌/防拆扣的解释',type:'textarea',ph:'说明发生原因、是否物流导致等'},
+    {key:'evidence',label:'证据照片/视频（逗号分隔）',required:false,value:'photo://buyer-proof.jpg'},
+  ],async b=>{
+    b.evidence=b.evidence?String(b.evidence).split(',').map(s=>s.trim()).filter(Boolean):[];
+    await api(`/api/orders/${d.id}/return-inspection/explanation`,{method:'POST',body:b});
+    toast('解释已提交，与平台证据并列保存','ok'); renderOrderDetail(d.id);
+  });
+}
+function returnResolve(d,insp){
+  modal('退回复核责任认定',[
+    {key:'responsibility',label:'赔付责任方',type:'select',options:[['buyer','买家'],['platform','平台'],['logistics','物流'],['seller','卖家'],['none','无责']]},
+    {key:'refundImpact',label:'退款影响',type:'select',options:[['full_refund','全额退款'],['partial_refund','部分退款（填扣除额）'],['refund_denied','不予退款']]},
+    {key:'deductAmount',label:'部分退款扣除额（买家承担）',type:'number',required:false,value:0},
+    {key:'refundImpactDetail',label:'认定说明（对照平台证据与买家解释）',type:'textarea'},
+  ],async b=>{
+    b.deductAmount=Number(b.deductAmount||0);
+    await api(`/api/return-inspections/${insp.id}/resolve`,{method:'POST',body:b});
+    toast('责任认定完成，退款冻结已解除，可在争议中裁决资金','ok'); renderOrderDetail(d.id);
+  });
 }
 function orderShip(d,cd){
   modal('平台发货', [
@@ -856,18 +929,27 @@ function orderReturn(d){
   });
 }
 function returnReceive(d){
-  modal('仓库验收买家退货（状态与交付证据不符将自动立案）', [
-    {key:'conditionSummary',label:'退回商品状态',type:'textarea'},
-    {key:'matchesPrevious',label:'与出库状态是否一致',type:'select',options:[[true,'一致：可退款'],[false,'状态变化：自动开争议冻结退款']],value:true},
-    {key:'discrepancies',label:'差异/损坏说明（不一致时）',type:'textarea',required:false},
-    {key:'photos',label:'验收照片',required:false,value:'photo://return-check.jpg'},
-    {key:'videoUrl',label:'验收视频',required:false},
+  modal('仓库退回复核（划痕/附件/吊牌/防拆扣 + 开箱视频）', [
+    {type:'html', html:`<div class="pause-banner" style="margin:0 0 10px">逐项与<b>出库状态复核</b>及<b>买家收货视频</b>比对。任一项不一致将<b>冻结退款并自动立案</b>；经办人会随开箱视频留档。</div>`},
+    {key:'scratchStatus',label:'① 划痕/成色',type:'select',options:[['consistent','与出库一致'],['new_scratch','新增划痕'],['worse','成色明显变差']]},
+    {key:'scratchDetail',label:'划痕说明（不一致时）',type:'textarea',required:false},
+    {key:'accessoriesStatus',label:'② 附件',type:'select',options:[['all_present','附件齐全'],['missing','附件缺失'],['swapped','疑似调换'],['damaged','附件损坏']]},
+    {key:'accessoriesFound',label:'实到附件（逗号分隔，缺失时留空或只填实际收到项）',required:false},
+    {key:'accessoriesDetail',label:'附件说明',type:'textarea',required:false},
+    {key:'tagStatus',label:'③ 吊牌',type:'select',options:[['intact','吊牌完好'],['missing','吊牌缺失'],['damaged','吊牌损坏']]},
+    {key:'tamperSealStatus',label:'④ 防拆扣（关键）',type:'select',options:[['intact','防拆扣完好未拆'],['removed','防拆扣已被拆除'],['damaged','防拆扣损坏']]},
+    {key:'tamperSealDetail',label:'防拆扣情况说明',type:'textarea',required:false},
+    {key:'openBoxVideo',label:'开箱视频 URL（经办人留证，必录）',value:'video://return-openbox.mp4'},
+    {key:'platformPhotos',label:'平台复核照片（逗号分隔）',required:false,value:'photo://return-check-1.jpg, photo://return-check-2.jpg'},
+    {key:'warehouseNote',label:'经办备注',type:'textarea',required:false},
   ], async b=>{
-    b.matchesPrevious=b.matchesPrevious==='true'||b.matchesPrevious===true;
-    b.photos=b.photos?String(b.photos).split(',').map(s=>s.trim()):[];
+    b.platformPhotos=b.platformPhotos?String(b.platformPhotos).split(',').map(s=>s.trim()).filter(Boolean):[];
+    if(b.accessoriesFound!==undefined) b.accessoriesFound=b.accessoriesFound?String(b.accessoriesFound).split(',').map(s=>s.trim()).filter(Boolean):[];
     const r=await api(`/api/orders/${d.id}/return-receive`,{method:'POST',body:b});
-    toast(r.message, r.disputed?'err':'ok'); loadOrders().then(()=>renderOrderDetail(d.id));
-  });
+    toast(r.message, r.disputed?'err':'ok');
+    loadOrders().then(()=>renderOrderDetail(d.id));
+    if(r.disputed) setTimeout(()=>switchTab('disputes'),600);
+  }, '提交退回复核');
 }
 async function orderRefund(d){
   await api(`/api/orders/${d.id}/refund`,{method:'POST',body:{}});
@@ -893,6 +975,7 @@ async function renderDisputeDetail(id){
     </div></div>
     <div class="section"><div class="t">自动归集的鉴定与交付证据（${(d.linked_evidence||[]).length}）</div><div class="c">
       <pre class="muted">${(d.linked_evidence||[]).join('\n')}</pre></div></div>
+    ${(d.returnInspections||[]).length?returnInspectionBlock(d.returnInspections):''}
     <div class="section"><div class="t">鉴定轮次 / 状态复核对照</div><div class="c">
       ${d.authentications.map(a=>`<div><span class="tag ${a.overturned?'bad':'info'}">第${a.round}轮</span>
         ${({authentic:'正品',fake:'假冒',suspicious:'存疑'})[a.result]} / 成色${a.grade} ${a.overturned?'<span class="tag bad">推翻初鉴</span>':''}
