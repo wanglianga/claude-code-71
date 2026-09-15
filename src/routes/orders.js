@@ -177,6 +177,9 @@ export default async function orderRoutes(fastify) {
       const policy = await c.query(
         `SELECT * FROM insurance_policies WHERE consignment_id=$1 AND status='active' ORDER BY id DESC LIMIT 1`,
         [o.consignment_id]);
+      // 订单与寄卖单同步进入“退货中”
+      await c.query(
+        `UPDATE orders SET status='returning' WHERE id=$1`, [orderId]);
       await c.query(
         `UPDATE consignments SET status='buyer_returning', return_carrier=$1, return_tracking=$2, updated_at=now() WHERE id=$3`,
         [b.returnCarrier, b.returnTracking, o.consignment_id]);
@@ -205,6 +208,18 @@ export default async function orderRoutes(fastify) {
       const o = await getOrderWithConsignment(c, orderId);
       const con = await getConsignment(c, o.consignment_id);
 
+      // 已存在复核记录 → 直接拒绝重复提交（优先于状态门禁）
+      const existed = await c.query(
+        `SELECT 1 FROM return_inspections WHERE order_id=$1 LIMIT 1`, [orderId]);
+      if (existed.rowCount) {
+        throw new HttpError(409, '该退货已完成仓库复核，不能重复提交');
+      }
+
+      // ---- 前置门禁：必须已由买家完成退货申请（订单=returning 且寄卖单=buyer_returning）----
+      if (o.status !== 'returning' || con.status !== 'buyer_returning') {
+        throw new HttpError(409, '买家尚未完成退货申请（订单需处于“退货中”），仓库不能提交退回复核');
+      }
+
       // 兼容旧入参（conditionSummary/matchesPrevious）；新入参为四项结构化核对
       const scratchStatus = b.scratchStatus || (b.matchesPrevious === false ? 'new_scratch' : 'consistent');
       const accessoriesStatus = b.accessoriesStatus || 'all_present';
@@ -218,7 +233,12 @@ export default async function orderRoutes(fastify) {
       ]) {
         if (!allowed.includes(v)) throw new HttpError(400, `${name}不合法`);
       }
-      const openBoxVideo = b.openBoxVideo || b.videoUrl || null;
+      const rawVideo = (b.openBoxVideo || b.videoUrl || '').toString().trim();
+      // ---- 资料门禁：必须提供有效开箱视频（非空字符串）----
+      if (!rawVideo) {
+        throw new HttpError(422, '退回复核必须提供有效开箱视频（openBoxVideo），否则不能提交');
+      }
+      const openBoxVideo = rawVideo;
       const platformPhotos = b.platformPhotos || b.photos || [];
       const accessoriesExpected = con.accessories || [];
       const accessoriesFound = Array.isArray(b.accessoriesFound) ? b.accessoriesFound : accessoriesExpected;

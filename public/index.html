@@ -330,7 +330,7 @@ async function loadOrders(){
   $('#listBody').innerHTML = d.items.length ? d.items.map(o=>`
     <div class="list-item" data-id="${o.id}">
       <div class="li-top"><span class="code">${o.code}</span>
-        <span>${o.settlement_paused?'<span class="tag bad">⏸结算暂停</span>':''}<span class="tag ${o.status==='refunded'?'bad':o.status==='completed'?'ok':'info'}">${{placed:'待发货',shipping:'配送中',delivered:'已签收/售后中',completed:'已完成',refunded:'已退款',returned:'已退货'}[o.status]||o.status}</span></span></div>
+        <span>${o.settlement_paused?'<span class="tag bad">⏸结算暂停</span>':''}<span class="tag ${o.status==='refunded'?'bad':o.status==='completed'?'ok':o.status==='returning'?'warn':'info'}">${{placed:'待发货',shipping:'配送中',delivered:'已签收/售后中',returning:'退货中',completed:'已完成',refunded:'已退款',returned:'已退货验收'}[o.status]||o.status}</span></span></div>
       <div style="margin:5px 0"><b>${o.brand}</b> ${o.model} <span class="muted">(${o.consignment_code})</span></div>
       <div class="muted" style="font-size:12px">${o.buyer_name||''} · ${o.outbound_carrier?('发货 '+o.outbound_carrier+'/'+o.outbound_tracking):'未发货'}</div>
       <div class="price" style="margin-top:3px">${fmt(o.amount)}</div>
@@ -815,7 +815,7 @@ async function renderOrderDetail(id){
     if ((ME.role==='buyer'&&Number(d.buyer_id)===ME.id&&d.status==='delivered')||['ops','admin'].includes(ME.role)&&d.status==='delivered')
       acts.push(['确认完成·售后期满放款',()=>orderComplete(d)]);
     if (ME.role==='buyer'&&Number(d.buyer_id)===ME.id&&d.status==='delivered') acts.push(['申请退货（重核保价物流）',()=>orderReturn(d)]);
-    if (['warehouse','admin'].includes(ME.role)) acts.push(['退回复核（划痕/附件/吊牌/防拆扣）',()=>returnReceive(d)]);
+    if (['warehouse','admin'].includes(ME.role)&&d.status==='returning') acts.push(['退回复核（划痕/附件/吊牌/防拆扣）',()=>returnReceive(d)]);
     // 买家就冻结的退回复核提交解释
     const pendingInsp = (insp.items||[]).find(x=>x.result==='changed' && !x.buyer_explanation);
     if (ME.role==='buyer'&&Number(d.buyer_id)===ME.id&&pendingInsp)

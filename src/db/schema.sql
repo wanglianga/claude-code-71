@@ -494,3 +494,14 @@ CREATE TABLE IF NOT EXISTS return_inspections (
 );
 CREATE INDEX IF NOT EXISTS idx_return_insp_order ON return_inspections(order_id);
 CREATE INDEX IF NOT EXISTS idx_return_insp_dispute ON return_inspections(dispute_id);
+
+-- 订单新增“退货中”状态：买家申请退货后订单与寄卖单同步为 returning / buyer_returning
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname='orders_status_check')
+     AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='orders_status_returning_check') THEN
+    ALTER TABLE orders DROP CONSTRAINT orders_status_check;
+    ALTER TABLE orders ADD CONSTRAINT orders_status_check
+      CHECK (status IN ('placed','shipping','delivered','returning','completed','refunded','returned'));
+  END IF;
+END $$;
