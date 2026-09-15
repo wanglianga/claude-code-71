@@ -306,7 +306,8 @@ CREATE TABLE IF NOT EXISTS financial_ledger (
   entry_type      TEXT NOT NULL CHECK (entry_type IN
                     ('payment','sale_proceeds','commission','storage_fee','insurance_premium',
                      'insurance_claim','refund','compensation','commission_refund',
-                     'return_shipping','auction_proceeds')),
+                     'return_shipping','auction_proceeds',
+                     'offer_deposit','deposit_refund','return_logistics_fee')),
   direction       TEXT NOT NULL CHECK (direction IN ('credit','debit')),
   amount          NUMERIC(12,2) NOT NULL,
   evidence_ref    TEXT,                       -- 证据引用（争议编号/鉴定轮次/复核记录）
@@ -503,5 +504,144 @@ BEGIN
     ALTER TABLE orders DROP CONSTRAINT orders_status_check;
     ALTER TABLE orders ADD CONSTRAINT orders_status_check
       CHECK (status IN ('placed','shipping','delivered','returning','completed','refunded','returned'));
+  END IF;
+END $$;
+
+-- ============================================================================
+-- 卖家底价/降价调整与撤回：收藏、议价(保证金)、活动报名、降价记录、撤回结算
+-- ============================================================================
+
+-- ---------- 买家收藏 ----------
+CREATE TABLE IF NOT EXISTS favorites (
+  id              BIGSERIAL PRIMARY KEY,
+  consignment_id  BIGINT NOT NULL REFERENCES consignments(id) ON DELETE CASCADE,
+  user_id         BIGINT NOT NULL REFERENCES users(id),
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (consignment_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_fav_con ON favorites(consignment_id);
+
+-- ---------- 买家议价（可缴纳保证金） ----------
+CREATE TABLE IF NOT EXISTS offers (
+  id              BIGSERIAL PRIMARY KEY,
+  code            TEXT UNIQUE NOT NULL,
+  consignment_id  BIGINT NOT NULL REFERENCES consignments(id) ON DELETE CASCADE,
+  buyer_id        BIGINT NOT NULL REFERENCES users(id),
+  offer_amount    NUMERIC(12,2) NOT NULL,
+  deposit_amount  NUMERIC(12,2) NOT NULL DEFAULT 0,
+  status          TEXT NOT NULL DEFAULT 'active'
+                    CHECK (status IN ('active','accepted','rejected','expired','released_for_withdraw','converted')),
+  note            TEXT,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  released_at     TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_offer_con ON offers(consignment_id, status);
+
+-- ---------- 活动报名 ----------
+CREATE TABLE IF NOT EXISTS promotions (
+  id              BIGSERIAL PRIMARY KEY,
+  code            TEXT UNIQUE NOT NULL,
+  title           TEXT NOT NULL,
+  promo_type      TEXT NOT NULL DEFAULT 'campaign',
+  starts_at       TIMESTAMPTZ,
+  ends_at         TIMESTAMPTZ,
+  active          BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS promo_enrollments (
+  id              BIGSERIAL PRIMARY KEY,
+  promotion_id    BIGINT NOT NULL REFERENCES promotions(id),
+  consignment_id  BIGINT NOT NULL REFERENCES consignments(id) ON DELETE CASCADE,
+  enrolled_by     BIGINT NOT NULL REFERENCES users(id),
+  status          TEXT NOT NULL DEFAULT 'enrolled'
+                    CHECK (status IN ('enrolled','cancelled')),
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (promotion_id, consignment_id)
+);
+CREATE INDEX IF NOT EXISTS idx_enroll_con ON promo_enrollments(consignment_id);
+
+-- ---------- 卖家降价记录 ----------
+CREATE TABLE IF NOT EXISTS price_adjustments (
+  id                  BIGSERIAL PRIMARY KEY,
+  code                TEXT UNIQUE NOT NULL,
+  consignment_id      BIGINT NOT NULL REFERENCES consignments(id),
+  old_reserve_price   NUMERIC(12,2) NOT NULL,
+  new_reserve_price   NUMERIC(12,2) NOT NULL,
+  old_sale_price      NUMERIC(12,2) NOT NULL,
+  new_sale_price      NUMERIC(12,2) NOT NULL,
+  commission_rate     NUMERIC(5,4) NOT NULL,
+  est_commission      NUMERIC(12,2) NOT NULL,
+  est_seller_proceeds NUMERIC(12,2) NOT NULL,
+  favorite_count      INTEGER NOT NULL DEFAULT 0,
+  active_offer_count  INTEGER NOT NULL DEFAULT 0,
+  enrollment_count    INTEGER NOT NULL DEFAULT 0,
+  storage_fee_total   NUMERIC(12,2) NOT NULL DEFAULT 0,
+  insurance_fee_total NUMERIC(12,2) NOT NULL DEFAULT 0,
+  reason              TEXT,
+  confirmed_by        BIGINT REFERENCES users(id),
+  created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_padj_con ON price_adjustments(consignment_id);
+
+-- ---------- 卖家撤回记录（保留卖家确认 + 客服说明） ----------
+CREATE TABLE IF NOT EXISTS seller_withdrawals (
+  id                  BIGSERIAL PRIMARY KEY,
+  code                TEXT UNIQUE NOT NULL,
+  consignment_id      BIGINT NOT NULL REFERENCES consignments(id),
+  reason              TEXT,
+  -- 撤回物流费用
+  return_carrier      TEXT,
+  return_tracking     TEXT,
+  return_logistics_fee NUMERIC(12,2) NOT NULL DEFAULT 0,
+  storage_fee_total   NUMERIC(12,2) NOT NULL DEFAULT 0,
+  insurance_fee_total NUMERIC(12,2) NOT NULL DEFAULT 0,
+  -- 受影响买家
+  notified_offer_count INTEGER NOT NULL DEFAULT 0,
+  released_deposit_total NUMERIC(12,2) NOT NULL DEFAULT 0,
+  favorite_count      INTEGER NOT NULL DEFAULT 0,
+  enrollment_count    INTEGER NOT NULL DEFAULT 0,
+  -- 卖家确认
+  seller_confirmed    BOOLEAN NOT NULL DEFAULT FALSE,
+  seller_confirmation TEXT,
+  confirmed_by        BIGINT REFERENCES users(id),
+  confirmed_at        TIMESTAMPTZ,
+  -- 客服说明
+  cs_note             TEXT,
+  cs_user_id          BIGINT REFERENCES users(id),
+  status              TEXT NOT NULL DEFAULT 'requested'
+                        CHECK (status IN ('requested','confirmed','cancelled')),
+  created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_withdraw_con ON seller_withdrawals(consignment_id);
+
+-- ---------- 卖家结算单（仓储/保险/物流拆开显示） ----------
+CREATE TABLE IF NOT EXISTS seller_settlements (
+  id                  BIGSERIAL PRIMARY KEY,
+  code                TEXT UNIQUE NOT NULL,
+  consignment_id      BIGINT NOT NULL REFERENCES consignments(id),
+  withdrawal_id       BIGINT REFERENCES seller_withdrawals(id),
+  seller_id           BIGINT NOT NULL REFERENCES users(id),
+  storage_fee         NUMERIC(12,2) NOT NULL DEFAULT 0,
+  insurance_fee       NUMERIC(12,2) NOT NULL DEFAULT 0,
+  return_logistics_fee NUMERIC(12,2) NOT NULL DEFAULT 0,
+  other_fee           NUMERIC(12,2) NOT NULL DEFAULT 0,
+  total_deduction     NUMERIC(12,2) NOT NULL DEFAULT 0,
+  deposit_released    NUMERIC(12,2) NOT NULL DEFAULT 0,
+  detail_note         TEXT,
+  status              TEXT NOT NULL DEFAULT 'issued' CHECK (status IN ('issued','settled')),
+  created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_settle_con ON seller_settlements(consignment_id);
+
+-- 幂等扩展 financial_ledger 科目枚举（议价保证金/保证金释放/退回物流费）
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname='financial_ledger_entry_type_check')
+     AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='financial_ledger_entry_type_check_v2') THEN
+    ALTER TABLE financial_ledger DROP CONSTRAINT financial_ledger_entry_type_check;
+    ALTER TABLE financial_ledger ADD CONSTRAINT financial_ledger_entry_type_check
+      CHECK (entry_type IN ('payment','sale_proceeds','commission','storage_fee','insurance_premium',
+        'insurance_claim','refund','compensation','commission_refund','return_shipping',
+        'auction_proceeds','offer_deposit','deposit_refund','return_logistics_fee'));
   END IF;
 END $$;

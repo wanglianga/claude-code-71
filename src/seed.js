@@ -149,6 +149,7 @@ async function seedDemo(c) {
     // 同品牌（Chanel）近期初鉴记录：复鉴推翻时用于触发品牌抽查
     const fionaId = (await c.query(`SELECT id FROM users WHERE username='auth_fiona'`)).rows[0].id;
     const evanId = (await c.query(`SELECT id FROM users WHERE username='auth_evan'`)).rows[0].id;
+    const henryId = (await c.query(`SELECT id FROM users WHERE username='ops_henry'`)).rows[0].id;
     const graceId = (await c.query(`SELECT id FROM users WHERE username='wh_grace'`)).rows[0].id;
     const sameBrand = [
       ['C-3003', 'Chanel', 'Le Boy 中号 荔枝牛皮', 'bag', 48000, fionaId, 'authenticated', 'S'],
@@ -187,6 +188,64 @@ async function seedDemo(c) {
         '鱼子酱牛皮颗粒自然、走线斜皮纹路对版',
         '小票/身份卡信息与商品必须一致',
       ]), fionaId]);
+
+    // 长期在售商品 C-4001：用于演示卖家降价/撤回（含收藏、议价保证金、活动报名、已计费用）
+    const { rows: [stale] } = await c.query(
+      `INSERT INTO consignments
+        (code,seller_id,category,brand,model,serial_no,purchase_proof,accessories,flaw_photos,
+         item_description,expected_price,reserve_price,declared_value,high_value,inbound_carrier,
+         inbound_tracking,authenticity,grade,sale_price,channel,listed_at,status)
+       VALUES ('C-4001',$1,'bag','Fendi','Baguette Mini 链条包','FN-4001','专柜发票',
+         $2,$3,'长期寄售，轻微使用痕迹',22000,16000,22000,FALSE,'SF','SF-4001',
+         'authentic','A',19800,'shop',now()-interval '120 days','listed') RETURNING *`,
+      [alice.id, JSON.stringify(['防尘袋', '身份卡', '吊牌']), JSON.stringify(['photo://fendi-flaw.jpg'])]);
+    await c.query(
+      `INSERT INTO status_confirmations (consignment_id,checkpoint,confirmer_id,condition_summary,matches_previous)
+       VALUES ($1,'inbound',$2,'签收一致',TRUE),($1,'photoshoot',$2,'拍摄复核一致',TRUE)`,
+      [stale.id, graceId]);
+    await c.query(
+      `INSERT INTO authentications (consignment_id,round,is_final,primary_authenticator,result,grade,
+         serial_check,hardware_check,summary)
+       VALUES ($1,1,TRUE,$2,'authentic','A','序列号吻合','五金正常','正品A级')`,
+      [stale.id, fionaId]);
+    await c.query(
+      `INSERT INTO quotes (consignment_id,market_price,commission_rate,storage_fee,insurance_fee,
+         reserve_price,sale_price,seller_proceeds,quote_note,created_by,seller_accepted,seller_reply)
+       VALUES ($1,21000,0.12,600,220,16000,19800,
+         ROUND((19800*(1-0.12)-600-220))::numeric,'长期寄售降价空间较大',$2,TRUE,'接受')`,
+      [stale.id, henryId]);
+    // 保险单（撤回结算的保险费来源）
+    await c.query(
+      `INSERT INTO insurance_policies (consignment_id,declared_value,premium,coverage_stage,status)
+       VALUES ($1,22000,220,'all','active')`, [stale.id]);
+    // 已计提仓储费（卖家承担，财务流水）
+    const finId = (await c.query(`SELECT id FROM users WHERE username='fin_jack'`)).rows[0].id;
+    await c.query(
+      `INSERT INTO financial_ledger (consignment_id,account,entry_type,direction,amount,evidence_ref,created_by)
+       VALUES ($1,'seller','storage_fee','debit',600,'storage:长期仓储2个月',$2),
+              ($1,'seller','insurance_premium','debit',220,'insurance:C-4001',$2)`,
+      [stale.id, finId]);
+    // 活动与报名
+    const { rows: [promo] } = await c.query(
+      `INSERT INTO promotions (code,title,promo_type,active) VALUES ('PM-AUTO','9月名包特惠','campaign',TRUE) RETURNING id`);
+    await c.query(
+      `INSERT INTO promo_enrollments (promotion_id,consignment_id,enrolled_by) VALUES ($1,$2,$3)
+       ON CONFLICT DO NOTHING`, [promo.id, stale.id, alice.id]);
+    // 买家收藏
+    const caraId = (await c.query(`SELECT id FROM users WHERE username='buyer_cara'`)).rows[0].id;
+    const danId = (await c.query(`SELECT id FROM users WHERE username='buyer_dan'`)).rows[0].id;
+    await c.query(
+      `INSERT INTO favorites (consignment_id,user_id) VALUES ($1,$2),($1,$3) ON CONFLICT DO NOTHING`,
+      [stale.id, caraId, danId]);
+    // 议价（dan 缴保证金）
+    const { rows: [offer] } = await c.query(
+      `INSERT INTO offers (code,consignment_id,buyer_id,offer_amount,deposit_amount,status,note)
+       VALUES ('OF-AUTO',$1,$2,17000,500,'active','诚心要，能再低些吗') RETURNING *`,
+      [stale.id, danId]);
+    await c.query(
+      `INSERT INTO financial_ledger (consignment_id,account,entry_type,direction,amount,evidence_ref,created_by)
+       VALUES ($1,'buyer','offer_deposit','debit',500,$2,$3)`,
+      [stale.id, `offer:${offer.code} 议价保证金`, danId]);
   }
 }
 

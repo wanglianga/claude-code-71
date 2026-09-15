@@ -290,49 +290,6 @@ export default async function consignmentRoutes(fastify) {
   });
 
   // 卖家撤回寄卖（仓库必须重新确认保价与物流责任）
-  fastify.post('/api/consignments/:id/withdraw', { onRequest: auth }, async (req) => {
-    const id = Number(req.params.id);
-    const b = req.body || {};
-    return tx(async (c) => {
-      const con = await getConsignment(c, id);
-      if (con.locked) throw new HttpError(409, `商品已被平台锁定（${con.lock_reason || '复鉴/争议处理中'}），撤回请在复鉴/争议案件中处理`);
-      if (Number(con.seller_id) !== req.user.uid && !['admin', 'ops'].includes(req.user.role)) {
-        throw new HttpError(403, '仅卖家本人可申请撤回');
-      }
-      if (['sold', 'shipping', 'delivered', 'aftersales', 'completed', 'returned_seller', 'auction_transferred'].includes(con.status)) {
-        throw new HttpError(409, `状态 ${con.status} 不可撤回`);
-      }
-      // 退回前强制重新确认保价 + 物流责任，记录退回复核
-      const { rows: insRows } = await c.query(
-        `SELECT * FROM insurance_policies WHERE consignment_id=$1 AND status='active' ORDER BY id DESC LIMIT 1`, [id]);
-      const policy = insRows[0];
-      if (b.openLogisticsDispute) {
-        // 保价/物流责任有异议 → 直接立案
-        await openDispute(c, {
-          consignment: con, opener: req.user, type: 'withdraw_logistics',
-          summary: b.reason || '卖家撤回寄卖，对退回保价/物流责任存在异议',
-          extraEvidence: [policy ? `insurance#${policy.id}(保价¥${policy.declared_value},阶段=${policy.coverage_stage})` : '无有效保价'],
-        });
-        return detail(id, c);
-      }
-      requireBody(b, ['returnCarrier', 'returnTracking']);
-      await c.query(
-        `UPDATE consignments SET status='returning_seller', return_carrier=$1, return_tracking=$2, updated_at=now() WHERE id=$3`,
-        [b.returnCarrier, b.returnTracking, id]);
-      await c.query(
-        `INSERT INTO status_confirmations (consignment_id,checkpoint,confirmer_id,condition_summary,photos,matches_previous)
-         VALUES ($1,'return',$2,$3,$4,COALESCE($5,true))`,
-        [id, req.user.uid, b.conditionSummary || '撤回退回前状态复核：重新确认保价与物流责任，状态与在库一致',
-         JSON.stringify(b.photos || []), b.matchesPrevious === false ? false : null]);
-      await logEvent(c, {
-        consignmentId: id, actor: req.user, type: 'withdraw', fromStatus: con.status, toStatus: 'returning_seller',
-        note: `卖家撤回，退回物流 ${b.returnCarrier}/${b.returnTracking}；保价 ¥${policy?.declared_value ?? con.declared_value} 已重新确认，物流责任随承运人回传`,
-        evidence: [policy ? `insurance#${policy.id}` : null, ...(b.photos || [])].filter(Boolean),
-        payload: { returnCarrier: b.returnCarrier, returnTracking: b.returnTracking, insuranceReconfirmed: !!policy },
-      });
-      return detail(id, c);
-    });
-  });
 
   // 仓库确认退回卖家签收
   fastify.post('/api/consignments/:id/return-complete', { onRequest: auth }, async (req) => {

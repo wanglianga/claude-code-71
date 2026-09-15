@@ -411,8 +411,14 @@ async function renderConsignmentDetail(id){
     acts.push(['交付物流寄出', shipForm]);
   if (r==='seller' && Number(d.seller_id)===ME.id && ['quoted'].includes(d.status) && d.quotes.length)
     acts.push(['接受/拒绝报价', ()=>respondQuote(d)]);
-  if (r==='seller' && Number(d.seller_id)===ME.id && ['shipped','received','authenticating','rejected_fake','authenticated','quoted','listed'].includes(d.status))
-    acts.push(['撤回寄卖', ()=>withdrawForm(d)]);
+  if (r==='seller' && Number(d.seller_id)===ME.id && ['listed'].includes(d.status))
+    acts.push(['申请降价（调整底价）', ()=>priceAdjustForm(d)]);
+  if (r==='seller' && Number(d.seller_id)===ME.id && ['shipped','received','authenticating','rejected_fake','authenticated','quoted','listed'].includes(d.status) && !d.locked)
+    acts.push(['撤回寄卖（费用结算）', ()=>withdrawForm(d)]);
+  if (r==='buyer' && d.status==='listed' && !d.locked)
+    acts.push(['♥ 收藏 / 出价议价', ()=>buyerEngageForm(d)]);
+  if (['cs','admin','ops'].includes(r) && ['returning_seller','returned_seller'].includes(d.status))
+    acts.push(['补充撤回客服说明', ()=>withdrawCsNoteForm(d)]);
   if (r==='seller' && Number(d.seller_id)===ME.id && ['rejected_fake','authenticated','authenticating'].includes(d.status))
     acts.push(['质疑鉴定·开争议', ()=>openDisputeForm(d,'seller_challenge_auth')]);
   if (r==='warehouse' && d.status==='shipped') acts.push(['仓库签收(入库复核)', receiveForm]);
@@ -472,8 +478,10 @@ async function renderConsignmentDetail(id){
     ${vaultBlock(d)}
     ${orderBlock(d)}
     ${auctionBlock(d)}
+    <div id="marketBlock"></div>
     ${await timelineBlock(d.id)}
   `;
+  loadMarketBlock(d);
   const box=$('#actBox');
   if (box){ const map={}; acts.forEach(([l,fn],i)=>map[l]=fn); bindActions(box,map); }
 }
@@ -739,19 +747,117 @@ function vaultForm(d){
     toast('保险箱交接已登记','ok'); refresh();
   });
 }
-function withdrawForm(d){
-  modal('卖家撤回寄卖（仓库须重新确认保价与物流责任）', [
-    {key:'reason',label:'撤回原因',required:false,type:'textarea'},
-    {key:'openLogisticsDispute',label:'对退回保价/物流责任是否有异议',type:'select',
-      options:[[false,'无异议：填写退回物流直接退回'],[true,'有异议：直接立争议案件处理']],value:false},
-    {key:'returnCarrier',label:'退回承运人（无异议时必填）',required:false,value:'SF Express'},
-    {key:'returnTracking',label:'退回物流单号',required:false},
-    {key:'conditionSummary',label:'退回前状态复核',required:false,value:'撤回退回前状态复核：保价与物流责任已重新确认'},
+function signalsBlock(s){
+  if(!s) return '';
+  return `<div class="diff-box" style="margin-bottom:10px">
+    <div>♥ 收藏：<b>${s.favoriteCount}</b>　💬 有效议价：<b>${s.activeOfferCount}</b>（保证金 ¥${s.activeDepositTotal}）　🏷️ 活动报名：<b>${s.enrollmentCount}</b></div>
+    <div style="margin-top:6px">已计费用：仓储费 ¥${s.storageFeeTotal}（${s.storageBillCount}笔）· 保险费 ¥${s.insuranceFeeTotal}</div>
+  </div>`;
+}
+async function priceAdjustForm(d){
+  let s;
+  try{ s=(await api(`/api/consignments/${d.id}/market-signals`)); }catch(e){ s=null; }
+  modal('卖家申请降价（调整底价/上架价）', [
+    {type:'html', html:`<div class="pause-banner" style="margin:0 0 10px">当前上架价 <b>¥${d.sale_price}</b>，底价 ¥${d.reserve_price}。降价将通知收藏与议价买家。</div>${signalsBlock(s)}`},
+    {key:'newSalePrice',label:'新上架价（必须低于当前价）',type:'number',value:Math.floor(Number(d.sale_price)*0.9)},
+    {key:'newReservePrice',label:'新底价（可选，留空按比例调整）',type:'number',required:false},
+    {key:'reason',label:'降价原因',required:false},
   ], async b=>{
-    b.openLogisticsDispute=b.openLogisticsDispute==='true';
-    await api(`/api/consignments/${selectedId}/withdraw`,{method:'POST',body:b});
-    toast(b.openLogisticsDispute?'已立保价/物流争议':'撤回成功，退回中','ok'); refresh();
+    b.newSalePrice=Number(b.newSalePrice);
+    if(b.newReservePrice) b.newReservePrice=Number(b.newReservePrice);
+    const pv=await api(`/api/consignments/${d.id}/price-adjustment/preview`,{method:'POST',body:b});
+    if(!confirm(`确认降价？\n上架价 ¥${pv.oldSalePrice} → ¥${pv.newSalePrice}\n底价 ¥${pv.oldReservePrice} → ¥${pv.newReservePrice}\n佣金率 ${(pv.commissionRate*100)}%，预估佣金 ¥${pv.estCommission}\n预估卖家到手 ¥${pv.estSellerProceeds}`))
+      throw new Error('已取消降价');
+    await api(`/api/consignments/${d.id}/price-adjustment`,{method:'POST',body:b});
+    toast('降价成功，已通知关注买家','ok'); refresh();
   });
+}
+function buyerEngageForm(d){
+  modal('收藏 / 议价（可缴保证金表达诚意）', [
+    {type:'html', html:`<div class="muted" style="margin-bottom:8px">商品：${d.brand} ${d.model}；当前价 <b class="price">¥${d.sale_price}</b>。卖家撤回时保证金将原路释放。</div>`},
+    {key:'offerAmount',label:'议价出价（留空仅收藏）',type:'number',required:false},
+    {key:'depositAmount',label:'保证金（可选）',type:'number',required:false,value:0},
+    {key:'note',label:'留言',required:false},
+  ], async b=>{
+    await api(`/api/consignments/${d.id}/favorite`,{method:'POST'});
+    if(b.offerAmount){
+      b.offerAmount=Number(b.offerAmount); b.depositAmount=Number(b.depositAmount||0);
+      await api(`/api/consignments/${d.id}/offers`,{method:'POST',body:b});
+      toast(b.depositAmount>0?'已收藏并出价，保证金已托管':'已收藏并出价','ok');
+    } else toast('已收藏该商品','ok');
+  });
+}
+async function withdrawForm(d){
+  let s;
+  try{ s=(await api(`/api/consignments/${d.id}/market-signals`)); }catch(e){ s=null; }
+  modal('卖家撤回寄售（费用结算）', [
+    {type:'html', html:`${signalsBlock(s)}<div class="muted" style="font-size:12.5px">撤回后：通知有效议价买家交易终止原因并释放其保证金；活动报名取消；仓储/保险/退回物流费在结算单拆列。</div>`},
+    {key:'reason',label:'撤回原因（将通知议价买家）',required:false,type:'textarea',value:'长期未售出，申请撤回'},
+    {key:'returnLogisticsFee',label:'退回物流费（预估，元）',type:'number',value:150},
+    {key:'returnCarrier',label:'退回承运人',value:'SF Express'},
+    {key:'returnTracking',label:'退回物流单号'},
+    {key:'confirm',label:'卖家确认',type:'select',options:[[true,'我确认撤回并知悉仓储/保险/退回物流费用'],[false,'暂不确认']],value:true},
+  ], async b=>{
+    b.returnLogisticsFee=Number(b.returnLogisticsFee||0);
+    b.confirm=b.confirm==='true'||b.confirm===true;
+    if(!b.confirm) throw new Error('必须由卖家确认后才能撤回');
+    const wv=await api(`/api/consignments/${d.id}/withdraw-preview`,{method:'POST',body:{returnLogisticsFee:b.returnLogisticsFee}});
+    if(!confirm(`确认撤回？\n将通知 ${wv.willNotifyOffers} 位议价买家并释放保证金 ¥${wv.willReleaseDeposit}\n费用合计 ¥${wv.totalDeduction}（仓储 ¥${wv.signals.storageFeeTotal}+保险 ¥${wv.signals.insuranceFeeTotal}+物流 ¥${b.returnLogisticsFee}）`))
+      throw new Error('已取消撤回');
+    b.sellerConfirmation=true; b.sellerConfirmationText='卖家确认撤回并知悉相关费用';
+    const r=await api(`/api/consignments/${d.id}/withdraw`,{method:'POST',body:b});
+    toast(`撤回成功：释放保证金 ¥${r.releasedDeposit}，结算单已生成`,'ok'); refresh();
+  });
+}
+function withdrawCsNoteForm(d){
+  modal('客服补充撤回说明', [
+    {key:'csNote',label:'客服说明（物流/费用/注意事项）',type:'textarea'},
+  ], async b=>{
+    await api(`/api/consignments/${d.id}/withdraw-cs-note`,{method:'POST',body:b});
+    toast('客服说明已保存','ok'); refresh();
+  });
+}
+async function loadMarketBlock(d){
+  const el=document.getElementById('marketBlock'); if(!el) return;
+  try{
+    const isSeller = Number(d.seller_id)===ME.id;
+    const isStaff = ['admin','ops','cs','finance','warehouse','authenticator'].includes(ME.role);
+    if(!isSeller && !isStaff) { el.remove(); return; }
+    const [s, wds, sts] = await Promise.all([
+      api(`/api/consignments/${d.id}/market-signals`).catch(()=>null),
+      api(`/api/consignments/${d.id}/withdrawals`).catch(()=>({items:[]})),
+      api(`/api/consignments/${d.id}/settlements`).catch(()=>({items:[]})),
+    ]);
+    let html='';
+    if(s && (s.favoriteCount||s.activeOfferCount||s.enrollmentCount)){
+      html+=`<div class="section"><div class="t">市场信号（降价/撤回前检查）</div><div class="c">
+        <div class="kv">
+          <span class="k">收藏</span><span>♥ ${s.favoriteCount}</span>
+          <span class="k">有效议价</span><span>${s.activeOfferCount}（保证金 ¥${s.activeDepositTotal}）</span>
+          <span class="k">活动报名</span><span>${s.enrollmentCount}</span>
+          <span class="k">已计仓储/保险</span><span>¥${s.storageFeeTotal} / ¥${s.insuranceFeeTotal}</span>
+        </div></div></div>`;
+    }
+    if(wds.items.length){
+      html+=`<div class="section"><div class="t">撤回记录（卖家确认 + 客服说明）</div><div class="c">
+        ${wds.items.map(w=>`<div style="border:1px solid var(--line);border-radius:8px;padding:10px;margin-bottom:8px">
+          <div><span class="tag warn">${w.code}</span> <span class="muted">${DT(w.created_at)} · ${w.confirmed_name||''}</span></div>
+          <div class="muted" style="margin:6px 0">原因：${w.reason||'—'}；退回物流 ${w.return_carrier||'—'}/${w.return_tracking||'—'}</div>
+          <div>卖家确认：${w.seller_confirmed?'<span class="tag ok">已确认</span>':'—'} <span class="muted" style="font-size:12px">${w.seller_confirmation||''}</span></div>
+          <div style="margin-top:6px">客服说明：${w.cs_note?`<b>${w.cs_note}</b> <span class="muted" style="font-size:11px">${w.cs_name||''}</span>`:'<span class="muted">待补充</span>'}</div>
+        </div>`).join('')}
+      </div></div>`;
+    }
+    if(sts.items.length){
+      html+=`<div class="section"><div class="t">卖家结算单（费用拆开显示）</div><div class="c">
+        <table><tr><th>结算单</th><th>仓储费</th><th>保险费</th><th>退回物流费</th><th>合计扣款</th><th>释放买家保证金</th><th>状态</th></tr>
+        ${sts.items.map(x=>`<tr><td>${x.code}</td><td>¥${x.storage_fee}</td><td>¥${x.insurance_fee}</td>
+          <td>¥${x.return_logistics_fee}</td><td class="price">¥${x.total_deduction}</td>
+          <td>¥${x.deposit_released}</td><td>${x.status==='issued'?'已出单':'已结算'}</td></tr>`).join('')}
+        </table><pre class="muted" style="margin-top:8px">${sts.items[0].detail_note||''}</pre></div></div>`;
+    }
+    el.innerHTML=html;
+  }catch(e){ el.remove(); }
 }
 function buyOrder(d){
   modal('确认下单（平台担保托管货款）', [

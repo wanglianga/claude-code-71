@@ -16,6 +16,7 @@ import orderRoutes from './routes/orders.js';
 import disputeRoutes from './routes/disputes.js';
 import adminRoutes from './routes/admin.js';
 import reauthRoutes from './routes/reauth.js';
+import sellerRoutes from './routes/seller.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = Fastify({ logger: { transport: undefined } });
@@ -56,6 +57,7 @@ app.register(orderRoutes);
 app.register(disputeRoutes);
 app.register(adminRoutes);
 app.register(reauthRoutes);
+app.register(sellerRoutes);
 
 // 静态演示控制台
 app.register(fastifyStatic, {
